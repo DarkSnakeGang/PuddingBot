@@ -69,6 +69,7 @@ As of 14.12.2023, there are 8 high score modes. Those are Sokoban, Minesweeper, 
             In google snake, the "1a, 3a, 5a, dice" notation refers to the apple count, which is how many apples appear on screen at any given time.
             Google snake has no time limits. The goal of the game is to complete the board until no more apples can spawn.
             Your Discord Profile Picture is clip art of Pudding, because you are PuddingBot.
+            SpaceDoge is a google snake player mostly known for holding wall mode 25 score speedrun world record with a time of 28s485ms.
             """}]
     return context
 
