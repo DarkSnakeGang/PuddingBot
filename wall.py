@@ -594,6 +594,8 @@ def check_pattern(pattern_string):
         for char in pattern_string:
             if char not in valid_characters:
                 return "Invalid characters in the pattern"
+    if(len(pattern_string.replace("1", "")) < 12):
+        return "Pattern has under 12 walls, refusing to calculate since it may result in a crash"
     pattern = Pattern(10, 9, wmap=stringToBoardArray(pattern_string))
     solution = pattern.solve()
     if solution:
