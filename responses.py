@@ -1,6 +1,7 @@
 from random import choice, randint
 import requests as rq
 import gpt
+import wall
 
 src_url = 'https://www.speedrun.com/api/v1/games/'
 snake_game = "o1y9pyk6"
@@ -92,6 +93,9 @@ def get_response(user_input: str) -> str:
             return "So far we know of exactly 235,355,155 wall patterns in small board."
         if "mods" in lowered:
             return "https://googlesnakemods.com"
+
+    if "pattern" == lowered[:7]:
+        return wall.check_pattern(lowered.split(" ")[1])
 
     if PuddingBot in lowered:
         if lowered.replace(PuddingBot, "") == " clear context":
