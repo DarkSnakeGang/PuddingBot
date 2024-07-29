@@ -581,6 +581,15 @@ def stringToBoardArray(board_string):
 
     return board
 
+def replace_char_at_index(original_string, index, new_char):
+    if index < 0 or index >= len(original_string):
+        raise IndexError("Index is out of range")
+    if len(new_char) != 1:
+        raise ValueError("New character must be a single character string")
+
+    # Create the new string with the replaced character
+    new_string = original_string[:index] + new_char + original_string[index + 1:]
+    return new_string    
 
 def check_pattern(pattern_string):
     ''' (string) -> None
@@ -600,5 +609,11 @@ def check_pattern(pattern_string):
     solution = pattern.solve()
     if solution:
         return "```\n" + str(solution) + "```"
-    else:
-        return "No Ham Cycle"
+    
+    for i in range(90):
+        pattern = Pattern(10, 9, wmap=stringToBoardArray(replace_char_at_index(pattern_string, i, "2")))
+        solution = pattern.solve()
+        if solution:
+            return f"""Found minus1 solution\n```\n{str(solution)}```\nIndex of -1: {i}\nx: {i % 10} y: {i // 10}""" 
+
+    return "No Ham Cycle"
