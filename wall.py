@@ -614,6 +614,12 @@ def check_pattern(pattern_string):
         pattern = Pattern(10, 9, wmap=stringToBoardArray(replace_char_at_index(pattern_string, i, "2")))
         solution = pattern.solve()
         if solution:
-            return f"""Found minus1 solution\n```\n{str(solution)}```\nIndex of -1: {i}\nx: {i % 10} y: {i // 10}""" 
+            final_solution = str(solution)
+            for j in range(10):
+                final_solution = replace_char_at_index(final_solution, j+1, str((j+1) % 10))
+                if j == 9:
+                    break
+                final_solution = replace_char_at_index(final_solution, (j+1)*13, str((j+1) % 10))
+            return f"""Found minus1 solution\n```\n{str(final_solution)}```\nMinus1 Position: Column {(i % 10) + 1} Row {(i // 10) + 1}""" 
 
     return "No Ham Cycle"
