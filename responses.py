@@ -2,6 +2,48 @@ from random import choice, randint
 import requests as rq
 import gpt
 import wall
+import os
+
+def get_random_funny_gif(api_key):
+    url = 'https://tenor.googleapis.com/v2/search?'
+    key_words = ['shocked', 'emberessed', 'laughing', 'cute', 'mad', 'annoyed', 'bored', 'happy', 'sad', 'cringe']
+
+    params = {
+        'q': choice(key_words) + ' anime girl',
+        'key': api_key,
+        'limit': 1000
+    }
+
+    try:
+        response = rq.get(url, params=params)
+        response.raise_for_status()  # Raise an error for bad responses
+        data = response.json()  # Attempt to parse the JSON response
+
+        # Debugging: print the raw response text
+        #print("Raw response:", response.text)
+
+        results = data.get('results', [])
+
+        if not results:
+            return "No GIFs found."
+
+            # Select a random result
+        gif_data = choice(results)
+
+        # Extract the GIF URLs from the selected result
+        media_formats = gif_data.get('media_formats', {})
+        gif_url = media_formats.get('gif', {}).get('url')  # Select the 'gif' format
+
+        # Fallback to other formats if 'gif' format is not available
+        if not gif_url:
+            gif_url = media_formats.get('loopedmp4', {}).get('url')  # Fallback to 'loopedmp4'
+
+        return gif_url if gif_url else "No suitable GIF found."
+
+    except rq.exceptions.RequestException as e:
+        return f"Request error: {e}"
+    except ValueError as e:
+        return f"JSON decoding error: {e}"
 
 src_url = 'https://www.speedrun.com/api/v1/games/'
 snake_game = "o1y9pyk6"
@@ -80,6 +122,9 @@ def get_response(user_input: str) -> str:
     global context
     lowered: str = user_input.lower()
     PuddingBot = '<@1210325027023753307>'
+
+    if lowered == 'https://tenor.com/view/pingas-butt-lame-fat-sitdown-gif-4771119':
+        return get_random_funny_gif(os.getenv('TENOR_KEY'))
 
     if lowered == 'roll dice':
         return str(randint(1, 6))
