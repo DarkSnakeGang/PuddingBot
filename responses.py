@@ -140,7 +140,7 @@ def get_response(user_input: str) -> str:
             return "https://googlesnakemods.com"
 
     if "pattern" == lowered[:7]:
-        return wall.check_pattern(lowered.split(" ")[1])
+        return wall.check_pattern(lowered[-90:])
 
     if PuddingBot in lowered:
         if lowered.replace(PuddingBot, "") == " clear context":
