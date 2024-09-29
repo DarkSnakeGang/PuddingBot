@@ -4,14 +4,32 @@ import gpt
 import wall
 import os
 
-def get_random_funny_gif(api_key):
+def get_random_funny_gif(api_key, emotion):
     url = 'https://tenor.googleapis.com/v2/search'
-    key_words = ['shocked', 'emberessed', 'laughing', 'cute', 'mad', 'annoyed', 'bored', 'happy', 'sad', 'cringe']
+    key_words = ['happy', 'sad', 'angry', 'excited', 'nervous', 'frustrated', 'calm', 'anxious', 'proud', 'confused',
+ 'shocked', 'embarrassed', 'grateful', 'jealous', 'curious', 'bored', 'hopeful', 'lonely', 'fearful', 
+ 'amused', 'content', 'disappointed', 'annoyed', 'surprised', 'relieved', 'guilty', 'ashamed', 'ecstatic', 
+ 'worried', 'resentful', 'envious', 'determined', 'overwhelmed', 'humiliated', 'skeptical', 'inspired', 
+ 'nostalgic', 'vindicated', 'heartbroken', 'optimistic', 'pessimistic', 'tired', 'energetic', 'isolated', 
+ 'trustful', 'distrustful', 'passionate', 'apathetic', 'impatient', 'satisfied', 'insecure', 'secure', 
+ 'offended', 'admiring', 'resentful', 'intimidated', 'disgusted', 'awed', 'motivated', 'infuriated', 
+ 'sympathetic', 'irritated', 'compassionate', 'playful', 'melancholic', 'defeated', 'ashamed', 'peaceful', 
+ 'enthusiastic', 'fascinated', 'self-conscious', 'inferior', 'superior', 'vulnerable', 'inconsolable', 
+ 'forgiving', 'triumphant', 'disheartened', 'grieving', 'alienated', 'offended', 'apathetic', 'resentful', 
+ 'hopeless', 'overjoyed', 'dismayed', 'disillusioned', 'terrified', 'awed', 'depressed', 'stressed', 
+ 'serene', 'flattered', 'lonely', 'fulfilled', 'exhausted', 'tender', 'impressed', 'compassionate', 
+ 'delighted', 'hesitant', 'thrilled', 'sympathetic', 'intrigued']
 
+    tenor_limit = 1
+    if emotion:
+        query = emotion
+    else:
+        query = choice(key_words) + ' anime girl'
+        tenor_limit = 20
     params = {
-        'q': choice(key_words) + ' anime girl',
+        'q': query,
         'key': api_key,
-        'limit': 1000
+        'limit': tenor_limit
     }
 
     try:
@@ -102,12 +120,24 @@ def get_response(user_input: str) -> str:
     lowered = user_input.lower()
     PuddingBot = '<@1210325027023753307>'
 
-    if lowered == 'https://tenor.com/view/pingas-butt-lame-fat-sitdown-gif-4771119':
-        return get_random_funny_gif(os.getenv('TENOR_KEY'))
+    cringe_list = ['https://media.tenor.com/v8zqaakaqlaaaaac/sensational-poster-cinema-in-2014-aamirkhan.gif', 
+                   'https://tenor.com/view/pingas-butt-lame-fat-sitdown-gif-4771119']
+
+    if lowered in cringe_list:
+        return get_random_funny_gif(os.getenv('TENOR_KEY'), False)
 
     if lowered == 'roll dice':
         return str(randint(1, 6))
     
+    if lowered == '<:poi:1284209602711392337>':
+        return '<:poi:1284209602711392337>'
+
+    if 'gif' == lowered[:3]:
+        return get_random_funny_gif(os.getenv('TENOR_KEY'), lowered.replace("gif", ""))
+    
+    if 'i completely agree' == lowered[:len('I completely agree')]:
+        return get_random_funny_gif(os.getenv('TENOR_KEY'), 'I completely agree thanos')
+
     if "how" in lowered:
         if "timer" in lowered:
             return "<#968893937630736504>"
