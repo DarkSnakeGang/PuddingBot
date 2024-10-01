@@ -45,18 +45,16 @@ async def on_message(message: Message) -> None:
     target_channel_name = "poi-🐡"
     # Check if the message is in the target channel
     print(f'[{channel}] {username}: "{user_message}"')
-    await read_channel_history(target_channel_name)
     if str(message.channel) == target_channel_name:
         # Check if the message is not the emoji :poi:
-        if message.content != "<:poi:1284209602711392337>":
-            print("Deleteing non-poi message in poi channel")
-            await message.delete()  # Delete the message
+        await send_message(message, "<:poi:1284209602711392337>")
+        await read_channel_history(target_channel_name)
+    else:
+        if channel == "Direct Message with Unknown User":
             return
-    if channel == "Direct Message with Unknown User":
-        return
-    if username == "q7lin": # Blocked him from using the bot
-        return
-    await send_message(message, user_message)
+        if username == "q7lin" or username == "q7lin47": # Blocked him from using the bot
+            return
+        await send_message(message, user_message)
 
 async def read_channel_history(channel_name: str, limit: int = 100):
     # Find the channel by name
@@ -66,7 +64,7 @@ async def read_channel_history(channel_name: str, limit: int = 100):
         # Fetch the message history
         async for message in channel.history(limit=limit):
             # print(f'{message.author}: {message.content}')
-            if message.content != "<:poi:1284209602711392337>":
+            if "<:" not in message.content or ":1284209602711392337>" not in message.content:
                 await message.delete()  # Delete the message
     else:
         print(f'Channel "{channel_name}" not found.')

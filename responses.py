@@ -130,7 +130,7 @@ def get_response(user_input: str) -> str:
     if lowered == 'roll dice':
         return str(randint(1, 6))
     
-    if lowered == '<:poi:1284209602711392337>':
+    if "<:" in lowered and ":1284209602711392337>" in lowered:
         return '<:poi:1284209602711392337>'
 
     if 'gif' == lowered[:3]:
