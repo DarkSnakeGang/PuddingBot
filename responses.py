@@ -3,6 +3,7 @@ import requests as rq
 import gpt
 import wall
 import os
+import asyncio
 
 def get_random_funny_gif(api_key, emotion):
     url = 'https://tenor.googleapis.com/v2/search'
