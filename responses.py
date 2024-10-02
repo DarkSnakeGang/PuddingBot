@@ -116,7 +116,8 @@ def clear_context():
 
 context = clear_context()
 
-def get_response(user_input: str) -> str:
+def get_response(user_input: str, user = "Nobody") -> str:
+    blocked_users = ["1118731833262231714"]
     global context
     lowered = user_input.lower()
     PuddingBot = '<@1210325027023753307>'
@@ -153,6 +154,8 @@ def get_response(user_input: str) -> str:
         return wall.check_pattern(lowered[-90:])
 
     if PuddingBot in lowered:
+        if user in blocked_users: # Blocked him from using the bot
+            return "You are blocked from using PuddingBot GPT function"
         if lowered.replace(PuddingBot, "") == " clear context":
             context = clear_context()
             return "Context cleared, I will no longer remember what we just discussed"

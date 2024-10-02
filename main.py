@@ -3,7 +3,7 @@ import os
 from dotenv import load_dotenv
 from discord import Intents, Client, Message, utils
 from responses import get_response
-import time
+from discord.ext import commands
 
 # Load Token
 load_dotenv()
@@ -12,10 +12,11 @@ TOKEN: Final[str] = os.getenv('DISCORD_TOKEN')
 # Setup Bot
 intents: Intents = Intents.default()
 intents.message_content = True 
+intents.messages = True  # Enable message intents
 client: Client = Client(intents=intents)
 
 # Message stuff
-async def send_message(message: Message, user_message: str) -> None:
+async def send_message(message: Message, user_message: str, user = "Nobody") -> None:
     if not user_message:
         print('Empty message')
         return
@@ -24,8 +25,9 @@ async def send_message(message: Message, user_message: str) -> None:
         user_message = user_message[1]
 
     try:
-        response: str = get_response(user_message)
-        await message.author.send(response) if is_private else await message.channel.send(response)
+        response: str = get_response(user_message, user)
+        if response:
+            await message.author.send(response) if is_private else await message.channel.send(response)
     except Exception as e:
         print(e)
     
@@ -47,27 +49,36 @@ async def on_message(message: Message) -> None:
     print(f'[{channel}] {username}: "{user_message}"')
     if str(message.channel) == target_channel_name:
         # Check if the message is not the emoji :poi:
-        await send_message(message, "<:poi:1284209602711392337>")
-        await read_channel_history(target_channel_name)
+        await read_channel_history(message.channel)
     else:
         if channel == "Direct Message with Unknown User":
             return
-        if username == "q7lin" or username == "q7lin47": # Blocked him from using the bot
-            return
-        await send_message(message, user_message)
-
-async def read_channel_history(channel_name: str, limit: int = 100):
-    # Find the channel by name
-    channel = utils.get(client.get_all_channels(), name=channel_name)
     
+    if not ('gif' == user_message.lower()[:3] and channel == target_channel_name):
+        await send_message(message, user_message, message.author.id)
+
+async def read_channel_history(channel, limit: int = 1000):
+    # Find the channel by name
+    # channel = utils.get(client.get_all_channels(), name=channel_name)
+    messages_to_delete = []
+
     if channel is not None:
         # Fetch the message history
         async for message in channel.history(limit=limit):
             # print(f'{message.author}: {message.content}')
-            if "<:" not in message.content or ":1284209602711392337>" not in message.content:
-                await message.delete()  # Delete the message
-    else:
-        print(f'Channel "{channel_name}" not found.')
+            if not (
+                message.content.startswith("<:") and
+                message.content.endswith(":1284209602711392337>") and
+                "<" not in message.content[2:-len(":1284209602711392337>")] and
+                ":" not in message.content[2:-len(":1284209602711392337>")]
+            ) or message.attachments:
+                messages_to_delete.append(message)  # Store the message for potential processing
+
+        if messages_to_delete:
+            await channel.delete_messages(messages_to_delete)
+            print(f"Deleted {len(messages_to_delete)} messages.")    
+        else:
+            print(f'Channel "{channel}" not found.')
 
 # Main entry point
 def main() -> None:
