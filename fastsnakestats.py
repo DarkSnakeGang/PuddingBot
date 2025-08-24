@@ -125,24 +125,26 @@ class FastSnakeStats(commands.Cog):
             if not world_records:
                 return None
             
-            # Count total world records
+            # Count total runs across all settings
             total_world_records = 0
             player_records = {}
             
-            # Count world records per player
+            # Count runs per player
             for settings_key, runs in world_records.items():
                 if not runs or len(runs) == 0:
                     continue
                 
-                # Only count if there's a valid world record
-                best_run = runs[0]
-                if best_run and dm.get_player_name(best_run):
-                    total_world_records += 1
-                    player_name = dm.get_player_name(best_run)
-                    
-                    if player_name not in player_records:
-                        player_records[player_name] = 0
-                    player_records[player_name] += 1
+                # Count all runs for this settings combination
+                total_world_records += len(runs)
+                
+                # Count runs per player
+                for run in runs:
+                    if run and dm.get_player_name(run):
+                        player_name = dm.get_player_name(run)
+                        
+                        if player_name not in player_records:
+                            player_records[player_name] = 0
+                        player_records[player_name] += 1
             
             if not player_records:
                 return None
