@@ -26,7 +26,7 @@ COPY . /app
 # Install Python dependencies
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Create a startup script with better error handling
+# Create a startup script with better error handling and model persistence
 RUN echo '#!/bin/bash\n\
 set -e\n\
 echo "Starting Ollama..."\n\
@@ -46,9 +46,14 @@ for i in {1..30}; do\n\
     sleep 2\n\
 done\n\
 \n\
-echo "Downloading llama3.2:3b model..."\n\
-ollama pull llama3.2:3b\n\
-echo "Model downloaded successfully!"\n\
+# Check if model already exists\n\
+if ollama list | grep -q "llama3.2:3b"; then\n\
+    echo "Model llama3.2:3b already exists, skipping download!"\n\
+else\n\
+    echo "Downloading llama3.2:3b model..."\n\
+    ollama pull llama3.2:3b\n\
+    echo "Model downloaded successfully!"\n\
+fi\n\
 \n\
 echo "Starting Discord bot..."\n\
 python3 main.py\n\
@@ -58,6 +63,9 @@ echo "Discord bot stopped. Shutting down Ollama..."\n\
 kill $OLLAMA_PID\n\
 wait $OLLAMA_PID\n\
 echo "Shutdown complete."' > /app/start.sh && chmod +x /app/start.sh
+
+# Create volume for Ollama models
+VOLUME ["/root/.ollama"]
 
 # Make port 8080 available to the world outside this container (if needed)
 EXPOSE 8080
