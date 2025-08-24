@@ -4,6 +4,7 @@ FROM ubuntu:22.04
 # Set environment variables to avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
+ENV OLLAMA_DEBUG=0
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -56,7 +57,7 @@ else\n\
 fi\n\
 \n\
 echo "Starting Discord bot..."\n\
-python3 main.py\n\
+python3 -u main.py\n\
 \n\
 # If we get here, the bot has stopped\n\
 echo "Discord bot stopped. Shutting down Ollama..."\n\

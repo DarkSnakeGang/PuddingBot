@@ -163,6 +163,8 @@ def get_response(user_input: str, user = "Nobody") -> str:
         return wall.check_pattern(lowered[-90:])
 
     if PuddingBot in lowered:
+        print(f"[BOT PINGED] User {user} sent: {user_input}")
+        
         if user in blocked_users: # Blocked him from using the bot
             return "You are blocked from using PuddingBot GPT function"
         if lowered.replace(PuddingBot, "") == " clear context":
@@ -175,14 +177,17 @@ def get_response(user_input: str, user = "Nobody") -> str:
         if user not in conversation_history:
             conversation_history[user] = []
         
-        # Add user message to conversation history
+        # Prepare user message
         user_message = lowered.replace(PuddingBot, "") + ", give a short answer but never mention that I asked for a short answer"
+        
+        # Add user message to conversation history BEFORE calling GPT
         conversation_history[user].append({"role": "user", "content": user_message})
         
         # Create messages array with system context and full conversation history
         messages = context + conversation_history[user]
         
-        gpt_res = gpt.chat_with_gpt(user_message, messages)
+        gpt_res = gpt.chat_with_gpt(messages)
+        print(f"[AI RESPONSE] Generated: {gpt_res}")
         
         # Add assistant response to conversation history
         conversation_history[user].append({"role": "assistant", "content": gpt_res})
@@ -194,5 +199,6 @@ def get_response(user_input: str, user = "Nobody") -> str:
         if len(gpt_res) > 2000:
             return "The answer I have is too long\nYou'll have to wait until Yarmiplay implements the option for me to split my answer into multiple messages for long answers like this"
         else:
+            print(f"[SENT TO DISCORD] Response sent to user {user}")
             return gpt_res
 

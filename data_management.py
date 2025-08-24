@@ -96,13 +96,18 @@ def parse_time(time_str: str) -> str:
         if hours > 0:
             # Split seconds into whole seconds and milliseconds
             whole_seconds = int(seconds)
-            milliseconds = int((seconds - whole_seconds) * 1000)
+            milliseconds = int(round((seconds - whole_seconds) * 1000))
             return f"{hours}h {minutes}m {whole_seconds}s {milliseconds}ms"
-        else:
+        elif minutes > 0:
             # Split seconds into whole seconds and milliseconds
             whole_seconds = int(seconds)
-            milliseconds = int((seconds - whole_seconds) * 1000)
+            milliseconds = int(round((seconds - whole_seconds) * 1000))
             return f"{minutes}m {whole_seconds}s {milliseconds}ms"
+        else:
+            # Only seconds, no minutes or hours
+            whole_seconds = int(seconds)
+            milliseconds = int(round((seconds - whole_seconds) * 1000))
+            return f"{whole_seconds}s {milliseconds}ms"
     
     return time_str
 
