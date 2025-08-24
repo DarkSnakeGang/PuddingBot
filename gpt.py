@@ -7,7 +7,7 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 
 def chat_with_gpt(prompt, context):
     """
-    Send a request to Ollama for AI response
+    Send a request to Ollama for AI response with full conversation context
     """
     # Prepare the full conversation context
     messages = []
@@ -19,10 +19,10 @@ def chat_with_gpt(prompt, context):
     # Add user message
     messages.append({"role": "user", "content": prompt})
     
-    # Prepare the request payload for Ollama
+    # Prepare the request payload for Ollama with full context
     payload = {
         "model": "llama3.2:3b",
-        "prompt": prompt,
+        "messages": messages,  # Send the full conversation context
         "stream": False,
         "options": {
             "temperature": 0.7,
