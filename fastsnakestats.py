@@ -605,13 +605,6 @@ class FastSnakeStats(commands.Cog):
                 inline=True
             )
             
-            # Add a note about checking the record
-            embed.add_field(
-                name="💡 Tip",
-                value=f"Use `/record` with these settings to see the current world record!",
-                inline=False
-            )
-            
             embed.set_footer(text="Try this combination and see how you do!")
             
             await interaction.followup.send(embed=embed)
