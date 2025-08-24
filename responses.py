@@ -123,6 +123,7 @@ def clear_context():
     }]
 
 context = clear_context()
+conversation_history = {}  # Store conversation history per user
 
 def get_response(user_input: str, user = "Nobody") -> str:
     blocked_users = ["1118731833262231714"]
@@ -166,12 +167,30 @@ def get_response(user_input: str, user = "Nobody") -> str:
             return "You are blocked from using PuddingBot GPT function"
         if lowered.replace(PuddingBot, "") == " clear context":
             context = clear_context()
+            if user in conversation_history:
+                conversation_history[user] = []
             return "Context cleared, I will no longer remember what we just discussed"
-        # Create a prompt that includes the system context and user message
-        system_prompt = context[0]["content"] if context else ""
+        
+        # Get or initialize conversation history for this user
+        if user not in conversation_history:
+            conversation_history[user] = []
+        
+        # Add user message to conversation history
         user_message = lowered.replace(PuddingBot, "") + ", give a short answer but never mention that I asked for a short answer"
-        full_prompt = f"{system_prompt}\n\nUser: {user_message}\nAssistant:"
-        gpt_res = gpt.chat_with_gpt(full_prompt, context)
+        conversation_history[user].append({"role": "user", "content": user_message})
+        
+        # Create messages array with system context and full conversation history
+        messages = context + conversation_history[user]
+        
+        gpt_res = gpt.chat_with_gpt(user_message, messages)
+        
+        # Add assistant response to conversation history
+        conversation_history[user].append({"role": "assistant", "content": gpt_res})
+        
+        # Limit conversation history to last 10 messages to prevent context overflow
+        if len(conversation_history[user]) > 10:
+            conversation_history[user] = conversation_history[user][-10:]
+        
         if len(gpt_res) > 2000:
             return "The answer I have is too long\nYou'll have to wait until Yarmiplay implements the option for me to split my answer into multiple messages for long answers like this"
         else:

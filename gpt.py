@@ -5,20 +5,10 @@ import os
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
-def chat_with_gpt(prompt, context):
+def chat_with_gpt(prompt, messages):
     """
     Send a request to Ollama for AI response with full conversation context
     """
-    # Prepare the full conversation context
-    messages = []
-    
-    # Add system message from context
-    if context and len(context) > 0:
-        messages.append(context[0])  # System message
-    
-    # Add user message
-    messages.append({"role": "user", "content": prompt})
-    
     # Prepare the request payload for Ollama with full context
     payload = {
         "model": "llama3.2:3b",
