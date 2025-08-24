@@ -298,9 +298,14 @@ class FastSnakeStats(commands.Cog):
                 # Handle High Score mode display
                 if run_mode == "High Score":
                     time_str = dm.get_run_time(record['run'])
-                    if time_str.startswith("0m 0s "):
+                    # Check for both old format (0m 0s Xms) and new format (Xs Yms)
+                    if time_str.startswith("0m 0s ") or (time_str.endswith("ms") and "m " not in time_str and "h " not in time_str):
                         # Extract the milliseconds part for High Score
-                        score = time_str.replace("0m 0s ", "").replace("ms", "")
+                        if time_str.startswith("0m 0s "):
+                            score = time_str.replace("0m 0s ", "").replace("ms", "")
+                        else:
+                            # New format: "Xs Yms" -> extract Y
+                            score = time_str.split("s ")[1].replace("ms", "")
                         display_info = f"{score} apples"
                     else:
                         display_info = time_str
@@ -804,9 +809,14 @@ class PlayerPaginationView(discord.ui.View):
                 # Handle High Score mode display
                 if run_mode == "High Score":
                     time_str = dm.get_run_time(record['run'])
-                    if time_str.startswith("0m 0s "):
+                    # Check for both old format (0m 0s Xms) and new format (Xs Yms)
+                    if time_str.startswith("0m 0s ") or (time_str.endswith("ms") and "m " not in time_str and "h " not in time_str):
                         # Extract the milliseconds part for High Score
-                        score = time_str.replace("0m 0s ", "").replace("ms", "")
+                        if time_str.startswith("0m 0s "):
+                            score = time_str.replace("0m 0s ", "").replace("ms", "")
+                        else:
+                            # New format: "Xs Yms" -> extract Y
+                            score = time_str.split("s ")[1].replace("ms", "")
                         display_info = f"{score} apples"
                     else:
                         display_info = time_str
