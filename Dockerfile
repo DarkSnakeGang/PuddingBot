@@ -1,5 +1,21 @@
-# Use the official Python image from the Docker Hub with version 3.10
-FROM python:3.10-slim
+# Use Ubuntu as base image for Ollama installation
+FROM ubuntu:22.04
+
+# Set environment variables to avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    python3 \
+    python3-pip \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Ollama
+RUN curl -fsSL https://ollama.ai/install.sh | sh
 
 # Set the working directory inside the container
 WORKDIR /app
@@ -7,11 +23,44 @@ WORKDIR /app
 # Copy the current directory contents into the container at /app
 COPY . /app
 
-# Install any required packages specified in requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Create a startup script with better error handling
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "Starting Ollama..."\n\
+ollama serve &\n\
+OLLAMA_PID=$!\n\
+\n\
+echo "Waiting for Ollama to be ready..."\n\
+sleep 10\n\
+\n\
+# Test if Ollama is responding\n\
+for i in {1..30}; do\n\
+    if curl -s http://localhost:11434/api/tags > /dev/null; then\n\
+        echo "Ollama is ready!"\n\
+        break\n\
+    fi\n\
+    echo "Waiting for Ollama... (attempt $i/30)"\n\
+    sleep 2\n\
+done\n\
+\n\
+echo "Downloading llama3.2:3b model..."\n\
+ollama pull llama3.2:3b\n\
+echo "Model downloaded successfully!"\n\
+\n\
+echo "Starting Discord bot..."\n\
+python3 main.py\n\
+\n\
+# If we get here, the bot has stopped\n\
+echo "Discord bot stopped. Shutting down Ollama..."\n\
+kill $OLLAMA_PID\n\
+wait $OLLAMA_PID\n\
+echo "Shutdown complete."' > /app/start.sh && chmod +x /app/start.sh
 
 # Make port 8080 available to the world outside this container (if needed)
 EXPOSE 8080
 
-# Run main.py when the container launches
-CMD ["python", "main.py"]
+# Run the startup script when the container launches
+CMD ["/app/start.sh"]

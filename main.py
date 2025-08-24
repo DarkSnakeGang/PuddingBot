@@ -69,9 +69,9 @@ async def read_channel_history(channel, limit: int = 1000):
             # print(f'{message.author}: {message.content}')
             if not (
                 message.content.startswith("<:") and
-                message.content.endswith(":1284209602711392337>") and
-                "<" not in message.content[2:-len(":1284209602711392337>")] and
-                ":" not in message.content[2:-len(":1284209602711392337>")]
+                message.content.endswith(":1362102081502318742>") and
+                "<" not in message.content[2:-len(":1362102081502318742>")] and
+                ":" not in message.content[2:-len(":1362102081502318742>")]
             ) or message.attachments:
                 messages_to_delete.append(message)  # Store the message for potential processing
 

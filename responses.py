@@ -131,8 +131,8 @@ def get_response(user_input: str, user = "Nobody") -> str:
     if lowered == 'roll dice':
         return str(randint(1, 6))
     
-    if "<:" in lowered and ":1284209602711392337>" in lowered:
-        return '<:poi:1284209602711392337>'
+    if "<:" in lowered and ":1362102081502318742>" in lowered:
+        return '<:poi:1362102081502318742>'
 
     if 'gif' == lowered[:3]:
         return get_random_funny_gif(os.getenv('TENOR_KEY'), lowered.replace("gif", ""))
@@ -159,7 +159,11 @@ def get_response(user_input: str, user = "Nobody") -> str:
         if lowered.replace(PuddingBot, "") == " clear context":
             context = clear_context()
             return "Context cleared, I will no longer remember what we just discussed"
-        gpt_res = gpt.chat_with_gpt(lowered.replace(PuddingBot, "") + ", give a short answer but never mention that I asked for a short answer", context)
+        # Create a prompt that includes the system context and user message
+        system_prompt = context[0]["content"] if context else ""
+        user_message = lowered.replace(PuddingBot, "") + ", give a short answer but never mention that I asked for a short answer"
+        full_prompt = f"{system_prompt}\n\nUser: {user_message}\nAssistant:"
+        gpt_res = gpt.chat_with_gpt(full_prompt, context)
         if len(gpt_res) > 2000:
             return "The answer I have is too long\nYou'll have to wait until Yarmiplay implements the option for me to split my answer into multiple messages for long answers like this"
         else:
