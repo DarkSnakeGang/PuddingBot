@@ -193,6 +193,28 @@ class FastSnakeStats(commands.Cog):
         """Autocomplete for date parameter in stats command"""
         return await self.get_date_choices()
     
+    def get_random_combination(self) -> Dict[str, str]:
+        """Generate a random combination of game settings"""
+        import random
+        
+        # Get all available options
+        apple_amounts = list(dm.APPLE_AMOUNTS.keys())
+        speeds = list(dm.SPEEDS.keys())
+        sizes = list(dm.SIZES.keys())
+        gamemodes = list(dm.GAMEMODES.keys())
+        run_modes = list(dm.RUN_MODES.keys())
+        
+        # Generate random combination
+        combination = {
+            'game_mode': random.choice(gamemodes),
+            'apple_amount': random.choice(apple_amounts),
+            'speed': random.choice(speeds),
+            'size': random.choice(sizes),
+            'run_mode': random.choice(run_modes)
+        }
+        
+        return combination
+    
     def create_record_embed(self, record_data: Dict, settings_key: str) -> discord.Embed:
         """Create a rich embed for record display"""
         run = record_data['run']
@@ -534,6 +556,69 @@ class FastSnakeStats(commands.Cog):
         except Exception as e:
             print(f"Error in stats command: {e}")
             await interaction.followup.send("❌ An error occurred while fetching statistics. Please try again.")
+    
+    @app_commands.command(name="random", description="Get a random combination of game settings to try")
+    async def random_command(self, interaction: discord.Interaction):
+        """Get a random combination of game settings"""
+        await interaction.response.defer()
+        
+        try:
+            # Generate random combination
+            combination = self.get_random_combination()
+            
+            # Create embed
+            embed = discord.Embed(
+                title="🎲 Random Challenge",
+                description="Here's a random combination to try!",
+                color=0x9b59b6,  # Purple for random
+                timestamp=datetime.now()
+            )
+            
+            # Add the combination details
+            embed.add_field(
+                name="🎮 Game Mode",
+                value=combination['game_mode'],
+                inline=True
+            )
+            
+            embed.add_field(
+                name="🍎 Apple Amount",
+                value=combination['apple_amount'],
+                inline=True
+            )
+            
+            embed.add_field(
+                name="⚡ Speed",
+                value=combination['speed'],
+                inline=True
+            )
+            
+            embed.add_field(
+                name="📏 Size",
+                value=combination['size'],
+                inline=True
+            )
+            
+            embed.add_field(
+                name="🎯 Run Mode",
+                value=combination['run_mode'],
+                inline=True
+            )
+            
+            # Add a note about checking the record
+            embed.add_field(
+                name="💡 Tip",
+                value=f"Use `/record` with these settings to see the current world record!",
+                inline=False
+            )
+            
+            embed.set_footer(text="Try this combination and see how you do!")
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            print(f"Error in random command: {e}")
+            await interaction.followup.send("❌ An error occurred while generating random combination. Please try again.")
 
 async def setup(bot):
     """Setup function for the cog"""
