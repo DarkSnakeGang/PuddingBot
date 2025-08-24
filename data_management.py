@@ -58,16 +58,23 @@ def get_settings_key(apple_amount: str, speed: str, size: str, gamemode: str, ru
     return f"{apple_amount}|{speed}|{size}|{gamemode}|{run_mode}"
 
 def parse_time(time_str: str) -> str:
-    """Parse time from ISO 8601 duration format to readable format"""
+    """Parse time from ISO 8601 duration format to readable format with hours support"""
     if not time_str or not isinstance(time_str, str):
         return "N/A"
     
-    # Handle ISO 8601 duration format (PT1M23.456S)
+    # Handle ISO 8601 duration format (PT1H2M3.456S)
     if time_str.startswith('PT'):
         time_str = time_str[2:]  # Remove 'PT'
         
+        hours = 0
         minutes = 0
         seconds = 0
+        
+        # Extract hours
+        if 'H' in time_str:
+            parts = time_str.split('H')
+            hours = int(parts[0])
+            time_str = parts[1]
         
         # Extract minutes
         if 'M' in time_str:
@@ -79,12 +86,23 @@ def parse_time(time_str: str) -> str:
         if 'S' in time_str:
             seconds = float(time_str.replace('S', ''))
         
-        # Format as MM:SS.mmm
-        total_seconds = minutes * 60 + seconds
-        minutes = int(total_seconds // 60)
+        # Format as (hours)h (minutes)m (seconds)s (milliseconds)ms
+        total_seconds = hours * 3600 + minutes * 60 + seconds
+        hours = int(total_seconds // 3600)
+        minutes = int((total_seconds % 3600) // 60)
         seconds = total_seconds % 60
         
-        return f"{minutes}:{seconds:06.3f}".replace('.', ':')
+        # Format with hours only if > 0
+        if hours > 0:
+            # Split seconds into whole seconds and milliseconds
+            whole_seconds = int(seconds)
+            milliseconds = int((seconds - whole_seconds) * 1000)
+            return f"{hours}h {minutes}m {whole_seconds}s {milliseconds}ms"
+        else:
+            # Split seconds into whole seconds and milliseconds
+            whole_seconds = int(seconds)
+            milliseconds = int((seconds - whole_seconds) * 1000)
+            return f"{minutes}m {whole_seconds}s {milliseconds}ms"
     
     return time_str
 
