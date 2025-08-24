@@ -94,8 +94,8 @@ def clear_context():
         If someone asks about submitting multiple runs in the same video to speedrun.com, the answer is that it's allowed.
         If someone asks, the creator of Google Snake is CLTincknell and he is in the discord server.
         If someone asks what makes a mode in google snake a high score mode, the answer is that a high score mode needs to have a spawn radius towards an element of gameplay. Spawn radius is when something isn't allowed to spawn too closely to the snake's head, because it is dangerous enough to kill the snake, and having it spawn so close might end the run unfairly. Additionally, an exception was made by the community for Statue mode with 1 apple.
-        As of 14.12.2023, there are 8 high score modes. Those are Sokoban, Minesweeper, Poison, Key, Portal, Shield, Wall and (Statue but only for 1a). Cheese is not a high score mode despite it being possible to end with different scores.
-        If asked, Google snake has 18 modes, not including Blender which let's you mix modes together. Don't explain what each mode does.
+        There are 8 high score modes. Those are Sokoban, Minesweeper, Poison, Key, Portal, Shield, Wall and (Statue but only for 1a). Cheese is high score too.
+        If asked, Google snake has 22 modes: Classic, Wall, Portal, Cheese, Borderless, Twin, Winged, Yin Yang, Key, Sokoban, Poison, Dimension, Minesweeper, Statue, Light, Shield, Arrow, Hotdog, Magnet, Gate, Peaceful, and Blender which let's you mix modes together. Don't explain what each mode does.
         Portal mode has twice the fruit and each one you eat makes the head escape out of it's matching fruit, and spawns 2 additional fruit.
         Yin yang is the mode with 2 snakes, where one is just an inverted snake. In twin mode, the snake switches places between head and tail only when it eats an apple.
         Google snake has 3 speeds which are Slow, Normal and Fast. Google Snake has 3 sizes, Small, normal and large.
