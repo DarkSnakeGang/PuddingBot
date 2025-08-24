@@ -75,22 +75,24 @@ class FastSnakeStats(commands.Cog):
             
             player_name_lower = player_name.lower()
             player_records = []
-            world_records_held = 0
+            total_runs = 0
             
             # Search through all settings for this player
             for settings_key, runs in world_records.items():
                 if not runs or len(runs) == 0:
                     continue
                 
-                # Check if player holds the world record (first run)
-                best_run = runs[0]
-                if dm.get_player_name(best_run).lower() == player_name_lower:
-                    world_records_held += 1
-                    player_records.append({
-                        'run': best_run,
-                        'settings': settings_key,
-                        'rank': 1
-                    })
+                # Count all runs for this player in this settings combination (matching /stats logic)
+                for run in runs:
+                    if run and dm.get_player_name(run):
+                        player_name_from_run = dm.get_player_name(run)
+                        if player_name_from_run.lower() == player_name_lower:
+                            total_runs += 1
+                            player_records.append({
+                                'run': run,
+                                'settings': settings_key,
+                                'rank': 1
+                            })
             
             if not player_records:
                 return None
@@ -100,8 +102,8 @@ class FastSnakeStats(commands.Cog):
             
             return {
                 'player_name': player_name,
-                'world_records_held': world_records_held,
-                'recent_activity': player_records[:10],  # Last 10 runs
+                'world_records_held': total_runs,  # Now matches /stats calculation
+                'recent_activity': player_records,  # All runs, not just 10
                 'date': date or await github_cache_fetcher.get_most_recent_date()
             }
             
@@ -157,8 +159,8 @@ class FastSnakeStats(commands.Cog):
             
             return {
                 'total_world_records': total_world_records,
-                'top_by_number': sorted_by_number[:10],  # Top 10 by number
-                'top_by_percentage': sorted_by_percentage[:10],  # Top 10 by percentage
+                'top_by_number': sorted_by_number,  # All players by number
+                'top_by_percentage': sorted_by_percentage,  # All players by percentage
                 'date': date or await github_cache_fetcher.get_most_recent_date()
             }
             
@@ -258,8 +260,8 @@ class FastSnakeStats(commands.Cog):
         
         return embed
     
-    def create_player_embed(self, player_data: Dict) -> discord.Embed:
-        """Create a rich embed for player display"""
+    def create_player_embed(self, player_data: Dict, page: int = 0) -> discord.Embed:
+        """Create a rich embed for player display with pagination"""
         embed = discord.Embed(
             title=f"👤 Player Profile - {player_data['player_name']}",
             color=0x0099ff,  # Blue for player profiles
@@ -273,19 +275,32 @@ class FastSnakeStats(commands.Cog):
             inline=False
         )
         
-        # Add recent activity
+        # Add recent activity with pagination
         if player_data['recent_activity']:
+            runs_per_page = 5
+            start_idx = page * runs_per_page
+            end_idx = start_idx + runs_per_page
+            page_runs = player_data['recent_activity'][start_idx:end_idx]
+            
             recent_text = ""
-            for i, record in enumerate(player_data['recent_activity'][:5], 1):  # Show last 5 runs
+            for i, record in enumerate(page_runs, start_idx + 1):
                 settings_parts = record['settings'].split('|')
-                mode_info = f"{settings_parts[3]} {settings_parts[4]}"  # gamemode + run_mode
+                
+                # Full category details
+                apple_amount = settings_parts[0]
+                speed = settings_parts[1]
+                size = settings_parts[2]
+                gamemode = settings_parts[3]
+                run_mode = settings_parts[4]
+                
+                category_info = f"{gamemode} • {apple_amount} • {speed} • {size} • {run_mode}"
                 
                 # Handle High Score mode display
-                if settings_parts[4] == "High Score":
-                    # Extract score from time field for High Score mode
+                if run_mode == "High Score":
                     time_str = dm.get_run_time(record['run'])
-                    if time_str.startswith("0:00:"):
-                        score = time_str.replace("0:00:", "")
+                    if time_str.startswith("0m 0s "):
+                        # Extract the milliseconds part for High Score
+                        score = time_str.replace("0m 0s ", "").replace("ms", "")
                         display_info = f"{score} apples"
                     else:
                         display_info = time_str
@@ -293,39 +308,49 @@ class FastSnakeStats(commands.Cog):
                     display_info = dm.get_run_time(record['run'])
                 
                 date = dm.get_run_date(record['run'])
-                recent_text += f"{i}. **{mode_info}** - {display_info} ({date})\n"
+                run_link = dm.get_run_link(record['run'])
+                
+                if run_link:
+                    recent_text += f"{i}. **{category_info}**\n   {display_info} • {date} • [View Run]({run_link})\n\n"
+                else:
+                    recent_text += f"{i}. **{category_info}**\n   {display_info} • {date}\n\n"
+            
+            if not recent_text:
+                recent_text = "No more runs to show."
             
             embed.add_field(
                 name="🕒 Recent Activity",
-                value=recent_text or "No recent activity",
+                value=recent_text,
                 inline=False
             )
         
-        # Add footer
-        embed.set_footer(text=f"Data from FastSnakeStats • {player_data['date']}")
+        # Add footer with page info
+        total_pages = (len(player_data['recent_activity']) + 4) // 5  # 5 runs per page
+        embed.set_footer(text=f"Data from FastSnakeStats • {player_data['date']} • Page {page + 1}/{total_pages}")
         
         return embed
     
-    def create_stats_embed(self, stats_data: Dict) -> discord.Embed:
-        """Create a rich embed for stats display"""
+    def create_stats_embed(self, stats_data: Dict, page: int = 0) -> discord.Embed:
+        """Create a rich embed for stats display with pagination"""
         embed = discord.Embed(
             title="📊 Top Record Holders",
             color=0xff9900,  # Orange for statistics
             timestamp=datetime.now()
         )
         
-        # Add total world records
-        embed.add_field(
-            name="📈 Total World Records",
-            value=str(stats_data['total_world_records']),
-            inline=False
-        )
+        # Add top by percentage with pagination
+        players_per_page = 10
+        start_idx = page * players_per_page
+        end_idx = start_idx + players_per_page
+        page_players = stats_data['top_by_percentage'][start_idx:end_idx]
         
-        # Add top by percentage
         top_by_percentage_text = ""
-        for i, (player, count) in enumerate(stats_data['top_by_percentage'], 1):
+        for i, (player, count) in enumerate(page_players, start_idx + 1):
             percentage = (count / stats_data['total_world_records']) * 100
-            top_by_percentage_text += f"{i}. **{player}** - {percentage:.1f}% ({count} records)\n"
+            top_by_percentage_text += f"{i}. **{player}** - **{count}** records • {percentage:.1f}%\n"
+        
+        if not top_by_percentage_text:
+            top_by_percentage_text = "No more players to show."
         
         embed.add_field(
             name="🏆 Most Records",
@@ -333,8 +358,16 @@ class FastSnakeStats(commands.Cog):
             inline=False
         )
         
-        # Add footer
-        embed.set_footer(text=f"Data from FastSnakeStats • {stats_data['date']}")
+        # Add total world records at the bottom
+        embed.add_field(
+            name="📈 Total World Records",
+            value=str(stats_data['total_world_records']),
+            inline=False
+        )
+        
+        # Add footer with page info
+        total_pages = (len(stats_data['top_by_percentage']) + players_per_page - 1) // players_per_page
+        embed.set_footer(text=f"Data from FastSnakeStats • {stats_data['date']} • Page {page + 1}/{total_pages}")
         
         return embed
     
@@ -512,10 +545,16 @@ class FastSnakeStats(commands.Cog):
                     await interaction.followup.send(f"❌ No data found for player: {player_name}")
                 return
             
-            # Create embed
-            embed = self.create_player_embed(player_data)
+            # Create embed with pagination
+            embed = self.create_player_embed(player_data, page=0)
             
-            await interaction.followup.send(embed=embed)
+            # Create view with pagination buttons (only if multiple pages)
+            total_pages = (len(player_data['recent_activity']) + 4) // 5  # 5 runs per page
+            if total_pages > 1:
+                view = PlayerPaginationView(player_data, interaction.user.id)
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
             
         except Exception as e:
             print(f"Error in player command: {e}")
@@ -538,10 +577,16 @@ class FastSnakeStats(commands.Cog):
                 await interaction.followup.send("❌ No statistics data available.")
                 return
             
-            # Create embed
-            embed = self.create_stats_embed(stats_data)
+            # Create embed with pagination
+            embed = self.create_stats_embed(stats_data, page=0)
             
-            await interaction.followup.send(embed=embed)
+            # Create view with pagination buttons (only if multiple pages)
+            total_pages = (len(stats_data['top_by_percentage']) + 9) // 10  # 10 players per page
+            if total_pages > 1:
+                view = StatsPaginationView(stats_data, interaction.user.id)
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
             
         except Exception as e:
             print(f"Error in stats command: {e}")
@@ -602,6 +647,193 @@ class FastSnakeStats(commands.Cog):
         except Exception as e:
             print(f"Error in random command: {e}")
             await interaction.followup.send("❌ An error occurred while generating random combination. Please try again.")
+
+class StatsPaginationView(discord.ui.View):
+    """View for paginating through stats results"""
+    
+    def __init__(self, stats_data: Dict, user_id: int):
+        super().__init__(timeout=300)  # 5 minute timeout
+        self.stats_data = stats_data
+        self.user_id = user_id
+        self.current_page = 0
+        self.players_per_page = 10
+        self.total_pages = (len(stats_data['top_by_percentage']) + self.players_per_page - 1) // self.players_per_page
+    
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
+            return
+        
+        self.current_page = max(0, self.current_page - 1)
+        await self.update_view(interaction)
+    
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
+            return
+        
+        self.current_page = min(self.total_pages - 1, self.current_page + 1)
+        await self.update_view(interaction)
+    
+    async def update_view(self, interaction: discord.Interaction):
+        """Update the view with new page"""
+        # Update button states
+        self.previous_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page >= self.total_pages - 1
+        
+        # Create new embed
+        embed = self.create_stats_embed(self.stats_data, self.current_page)
+        
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    def create_stats_embed(self, stats_data: Dict, page: int = 0) -> discord.Embed:
+        """Create a rich embed for stats display with pagination"""
+        embed = discord.Embed(
+            title="📊 Top Record Holders",
+            color=0xff9900,  # Orange for statistics
+            timestamp=datetime.now()
+        )
+        
+        # Add top by percentage with pagination
+        start_idx = page * self.players_per_page
+        end_idx = start_idx + self.players_per_page
+        page_players = stats_data['top_by_percentage'][start_idx:end_idx]
+        
+        top_by_percentage_text = ""
+        for i, (player, count) in enumerate(page_players, start_idx + 1):
+            percentage = (count / stats_data['total_world_records']) * 100
+            top_by_percentage_text += f"{i}. **{player}** - **{count}** records • {percentage:.1f}%\n"
+        
+        if not top_by_percentage_text:
+            top_by_percentage_text = "No more players to show."
+        
+        embed.add_field(
+            name="🏆 Most Records",
+            value=top_by_percentage_text,
+            inline=False
+        )
+        
+        # Add total world records at the bottom
+        embed.add_field(
+            name="📈 Total World Records",
+            value=str(stats_data['total_world_records']),
+            inline=False
+        )
+        
+        # Add footer with page info
+        embed.set_footer(text=f"Data from FastSnakeStats • {stats_data['date']} • Page {page + 1}/{self.total_pages}")
+        
+        return embed
+
+class PlayerPaginationView(discord.ui.View):
+    """View for paginating through player results"""
+    
+    def __init__(self, player_data: Dict, user_id: int):
+        super().__init__(timeout=300)  # 5 minute timeout
+        self.player_data = player_data
+        self.user_id = user_id
+        self.current_page = 0
+        self.runs_per_page = 5
+        self.total_pages = (len(player_data['recent_activity']) + self.runs_per_page - 1) // self.runs_per_page
+    
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
+            return
+        
+        self.current_page = max(0, self.current_page - 1)
+        await self.update_view(interaction)
+    
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
+            return
+        
+        self.current_page = min(self.total_pages - 1, self.current_page + 1)
+        await self.update_view(interaction)
+    
+    async def update_view(self, interaction: discord.Interaction):
+        """Update the view with new page"""
+        # Update button states
+        self.previous_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page >= self.total_pages - 1
+        
+        # Create new embed
+        embed = self.create_player_embed(self.player_data, self.current_page)
+        
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    def create_player_embed(self, player_data: Dict, page: int = 0) -> discord.Embed:
+        """Create a rich embed for player display with pagination"""
+        embed = discord.Embed(
+            title=f"👤 Player Profile - {player_data['player_name']}",
+            color=0x0099ff,  # Blue for player profiles
+            timestamp=datetime.now()
+        )
+        
+        # Add statistics fields
+        embed.add_field(
+            name="📊 Statistics",
+            value=f"**World Records:** {player_data['world_records_held']}",
+            inline=False
+        )
+        
+        # Add recent activity with pagination
+        if player_data['recent_activity']:
+            start_idx = page * self.runs_per_page
+            end_idx = start_idx + self.runs_per_page
+            page_runs = player_data['recent_activity'][start_idx:end_idx]
+            
+            recent_text = ""
+            for i, record in enumerate(page_runs, start_idx + 1):
+                settings_parts = record['settings'].split('|')
+                
+                # Full category details
+                apple_amount = settings_parts[0]
+                speed = settings_parts[1]
+                size = settings_parts[2]
+                gamemode = settings_parts[3]
+                run_mode = settings_parts[4]
+                
+                category_info = f"{gamemode} • {apple_amount} • {speed} • {size} • {run_mode}"
+                
+                # Handle High Score mode display
+                if run_mode == "High Score":
+                    time_str = dm.get_run_time(record['run'])
+                    if time_str.startswith("0m 0s "):
+                        # Extract the milliseconds part for High Score
+                        score = time_str.replace("0m 0s ", "").replace("ms", "")
+                        display_info = f"{score} apples"
+                    else:
+                        display_info = time_str
+                else:
+                    display_info = dm.get_run_time(record['run'])
+                
+                date = dm.get_run_date(record['run'])
+                run_link = dm.get_run_link(record['run'])
+                
+                if run_link:
+                    recent_text += f"{i}. **{category_info}**\n   {display_info} • {date} • [View Run]({run_link})\n\n"
+                else:
+                    recent_text += f"{i}. **{category_info}**\n   {display_info} • {date}\n\n"
+            
+            if not recent_text:
+                recent_text = "No more runs to show."
+            
+            embed.add_field(
+                name="🕒 Recent Activity",
+                value=recent_text,
+                inline=False
+            )
+        
+        # Add footer with page info
+        embed.set_footer(text=f"Data from FastSnakeStats • {player_data['date']} • Page {page + 1}/{self.total_pages}")
+        
+        return embed
 
 async def setup(bot):
     """Setup function for the cog"""
