@@ -319,18 +319,6 @@ class FastSnakeStats(commands.Cog):
             inline=False
         )
         
-        # Add top by number
-        top_by_number_text = ""
-        for i, (player, count) in enumerate(stats_data['top_by_number'], 1):
-            percentage = (count / stats_data['total_world_records']) * 100
-            top_by_number_text += f"{i}. **{player}** - {count} records ({percentage:.1f}%)\n"
-        
-        embed.add_field(
-            name="🥇 Most Records (by number)",
-            value=top_by_number_text,
-            inline=False
-        )
-        
         # Add top by percentage
         top_by_percentage_text = ""
         for i, (player, count) in enumerate(stats_data['top_by_percentage'], 1):
@@ -338,7 +326,7 @@ class FastSnakeStats(commands.Cog):
             top_by_percentage_text += f"{i}. **{player}** - {percentage:.1f}% ({count} records)\n"
         
         embed.add_field(
-            name="📊 Most Records (by percentage)",
+            name="🏆 Most Records",
             value=top_by_percentage_text,
             inline=False
         )
