@@ -168,6 +168,156 @@ class FastSnakeStats(commands.Cog):
             print(f"Error getting stats data: {e}")
             return None
     
+    async def get_weekly_report_data(self) -> Optional[Dict]:
+        """Get weekly report data showing record changes in the last 7 days"""
+        try:
+            # Get available dates
+            available_dates = await github_cache_fetcher.get_available_dates()
+            if not available_dates or len(available_dates) < 2:
+                return None
+            
+            # Get the most recent 7 days from available dates
+            recent_dates = available_dates[-7:] if len(available_dates) >= 7 else available_dates
+            current_date = recent_dates[-1]  # Most recent date
+            week_ago_date = recent_dates[0]  # 7 days ago (or earliest available)
+            
+            # Fetch current and week-ago data
+            current_records = await github_cache_fetcher.fetch_world_records_for_date(current_date)
+            week_ago_records = await github_cache_fetcher.fetch_world_records_for_date(week_ago_date)
+            
+            if not current_records:
+                return None
+            
+            # Analyze changes
+            new_records = []
+            record_changes = []
+            improved_records = []
+            
+            # Get all unique settings keys
+            all_settings = set(current_records.keys())
+            if week_ago_records:
+                all_settings.update(week_ago_records.keys())
+            
+            for settings_key in all_settings:
+                current_runs = current_records.get(settings_key, [])
+                week_ago_runs = week_ago_records.get(settings_key, []) if week_ago_records else []
+                
+                # Check for new records (no previous record)
+                if current_runs and not week_ago_runs:
+                    best_run = current_runs[0]
+                    new_records.append({
+                        'settings': settings_key,
+                        'run': best_run,
+                        'player': dm.get_player_name(best_run),
+                        'time': dm.get_run_time(best_run),
+                        'date': dm.get_run_date(best_run)
+                    })
+                
+                # Check for record changes (different player or improved time)
+                elif current_runs and week_ago_runs:
+                    current_best = current_runs[0]
+                    week_ago_best = week_ago_runs[0]
+                    
+                    current_player = dm.get_player_name(current_best)
+                    week_ago_player = dm.get_player_name(week_ago_best)
+                    
+                    # Different player took the record
+                    if current_player != week_ago_player:
+                        record_changes.append({
+                            'settings': settings_key,
+                            'old_player': week_ago_player,
+                            'new_player': current_player,
+                            'old_time': dm.get_run_time(week_ago_best),
+                            'new_time': dm.get_run_time(current_best),
+                            'old_date': dm.get_run_date(week_ago_best),
+                            'new_date': dm.get_run_date(current_best),
+                            'improvement': self._calculate_improvement(week_ago_best, current_best)
+                        })
+                    
+                    # Same player improved their own record
+                    elif current_player == week_ago_player:
+                        improvement = self._calculate_improvement(week_ago_best, current_best)
+                        if improvement and improvement > 0:
+                            improved_records.append({
+                                'settings': settings_key,
+                                'player': current_player,
+                                'old_time': dm.get_run_time(week_ago_best),
+                                'new_time': dm.get_run_time(current_best),
+                                'old_date': dm.get_run_date(week_ago_best),
+                                'new_date': dm.get_run_date(current_best),
+                                'improvement': improvement
+                            })
+            
+            return {
+                'current_date': current_date,
+                'week_ago_date': week_ago_date,
+                'new_records': new_records,
+                'record_changes': record_changes,
+                'improved_records': improved_records,
+                'total_changes': len(new_records) + len(record_changes) + len(improved_records)
+            }
+            
+        except Exception as e:
+            print(f"Error getting weekly report data: {e}")
+            return None
+    
+    def _calculate_improvement(self, old_run: dict, new_run: dict) -> Optional[float]:
+        """Calculate time improvement in milliseconds"""
+        try:
+            old_time_str = dm.get_run_time(old_run)
+            new_time_str = dm.get_run_time(new_run)
+            
+            # Convert time strings to milliseconds for comparison
+            old_ms = self._time_to_milliseconds(old_time_str)
+            new_ms = self._time_to_milliseconds(new_time_str)
+            
+            if old_ms and new_ms:
+                return old_ms - new_ms  # Positive means improvement
+            return None
+        except Exception as e:
+            print(f"Error calculating improvement: {e}")
+            return None
+    
+    def _time_to_milliseconds(self, time_str: str) -> Optional[float]:
+        """Convert time string to milliseconds"""
+        try:
+            if not time_str or time_str == "N/A":
+                return None
+            
+            # Handle format like "1h 2m 3s 456ms"
+            total_ms = 0
+            
+            # Extract hours
+            if 'h' in time_str:
+                parts = time_str.split('h')
+                hours = int(parts[0])
+                total_ms += hours * 3600 * 1000
+                time_str = parts[1]
+            
+            # Extract minutes
+            if 'm' in time_str:
+                parts = time_str.split('m')
+                minutes = int(parts[0])
+                total_ms += minutes * 60 * 1000
+                time_str = parts[1]
+            
+            # Extract seconds
+            if 's' in time_str:
+                parts = time_str.split('s')
+                seconds = float(parts[0])
+                total_ms += seconds * 1000
+                time_str = parts[1]
+            
+            # Extract milliseconds
+            if 'ms' in time_str:
+                ms = int(time_str.replace('ms', '').strip())
+                total_ms += ms
+            
+            return total_ms
+        except Exception as e:
+            print(f"Error converting time to milliseconds: {e}")
+            return None
+    
     async def get_date_choices(self) -> List[app_commands.Choice[str]]:
         """Get available dates as choices for command parameters"""
         try:
@@ -375,6 +525,129 @@ class FastSnakeStats(commands.Cog):
         embed.set_footer(text=f"Data from FastSnakeStats • {stats_data['date']} • Page {page + 1}/{total_pages}")
         
         return embed
+    
+    def create_weekly_report_embed(self, report_data: Dict, page: int = 0) -> discord.Embed:
+        """Create a rich embed for weekly report display with pagination"""
+        embed = discord.Embed(
+            title="📈 Weekly Record Report",
+            description=f"Record changes from {report_data['week_ago_date']} to {report_data['current_date']}",
+            color=0x00ff88,  # Green for reports
+            timestamp=datetime.now()
+        )
+        
+        # Add summary statistics
+        embed.add_field(
+            name="📊 Summary",
+            value=f"**Total Changes:** {report_data['total_changes']}\n"
+                  f"**New Records:** {len(report_data['new_records'])}\n"
+                  f"**Record Changes:** {len(report_data['record_changes'])}\n"
+                  f"**Improved Records:** {len(report_data['improved_records'])}",
+            inline=False
+        )
+        
+        # Determine what to show based on page
+        items_per_page = 3
+        all_items = []
+        
+        # Add new records
+        for item in report_data['new_records']:
+            all_items.append(('🆕', item, 'new'))
+        
+        # Add record changes
+        for item in report_data['record_changes']:
+            all_items.append(('🔄', item, 'change'))
+        
+        # Add improved records
+        for item in report_data['improved_records']:
+            all_items.append(('⚡', item, 'improved'))
+        
+        if not all_items:
+            embed.add_field(
+                name="📝 No Changes",
+                value="No record changes were detected in the last 7 days.",
+                inline=False
+            )
+        else:
+            # Paginate through all items
+            start_idx = page * items_per_page
+            end_idx = start_idx + items_per_page
+            page_items = all_items[start_idx:end_idx]
+            
+            changes_text = ""
+            for emoji, item, item_type in page_items:
+                settings_parts = item['settings'].split('|')
+                run_mode = settings_parts[4]
+                category_info = f"{settings_parts[3]} • {settings_parts[0]} • {settings_parts[1]} • {settings_parts[2]} • {run_mode}"
+                
+                if item_type == 'new':
+                    display_time = self._format_time_for_display(item['time'], run_mode)
+                    changes_text += f"{emoji} **NEW RECORD** - {category_info}\n"
+                    changes_text += f"   👤 **{item['player']}** • {display_time} • {item['date']}\n\n"
+                
+                elif item_type == 'change':
+                    old_display_time = self._format_time_for_display(item['old_time'], run_mode)
+                    new_display_time = self._format_time_for_display(item['new_time'], run_mode)
+                    changes_text += f"{emoji} **RECORD CHANGE** - {category_info}\n"
+                    changes_text += f"   🔄 **{item['old_player']}** → **{item['new_player']}**\n"
+                    changes_text += f"   ⏱️ {old_display_time} → {new_display_time}\n"
+                    if item['improvement']:
+                        improvement_str = self._format_improvement(item['improvement'])
+                        changes_text += f"   📈 Improvement: {improvement_str}\n"
+                    changes_text += f"   📅 {item['new_date']}\n\n"
+                
+                elif item_type == 'improved':
+                    old_display_time = self._format_time_for_display(item['old_time'], run_mode)
+                    new_display_time = self._format_time_for_display(item['new_time'], run_mode)
+                    changes_text += f"{emoji} **IMPROVED RECORD** - {category_info}\n"
+                    changes_text += f"   👤 **{item['player']}**\n"
+                    changes_text += f"   ⏱️ {old_display_time} → {new_display_time}\n"
+                    if item['improvement']:
+                        improvement_str = self._format_improvement(item['improvement'])
+                        changes_text += f"   📈 Improvement: {improvement_str}\n"
+                    changes_text += f"   📅 {item['new_date']}\n\n"
+            
+            if not changes_text:
+                changes_text = "No more changes to show."
+            
+            embed.add_field(
+                name="📝 Record Changes",
+                value=changes_text,
+                inline=False
+            )
+        
+        # Add footer with page info
+        total_pages = (len(all_items) + items_per_page - 1) // items_per_page
+        embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
+        
+        return embed
+    
+    def _format_improvement(self, improvement_ms: float) -> str:
+        """Format improvement time in a readable way"""
+        if improvement_ms < 1000:
+            return f"{improvement_ms:.0f}ms"
+        elif improvement_ms < 60000:
+            seconds = improvement_ms / 1000
+            return f"{seconds:.1f}s"
+        else:
+            minutes = improvement_ms / 60000
+            return f"{minutes:.1f}m"
+    
+    def _format_time_for_display(self, time_str: str, run_mode: str) -> str:
+        """Format time string for display, handling High Score mode specially"""
+        if run_mode == "High Score":
+            # Check for both old format (0m 0s Xms) and new format (Xs Yms)
+            if time_str.startswith("0m 0s ") or (time_str.endswith("ms") and "m " not in time_str and "h " not in time_str):
+                # Extract the milliseconds part for High Score
+                if time_str.startswith("0m 0s "):
+                    score = time_str.replace("0m 0s ", "").replace("ms", "")
+                else:
+                    # New format: "Xs Yms" -> extract Y
+                    score = time_str.split("s ")[1].replace("ms", "")
+                return f"{score} apples"
+            else:
+                return time_str
+        else:
+            return time_str
     
     @app_commands.command(name="record", description="Get world record for specific settings")
     @app_commands.describe(
@@ -652,6 +925,39 @@ class FastSnakeStats(commands.Cog):
         except Exception as e:
             print(f"Error in random command: {e}")
             await interaction.followup.send("❌ An error occurred while generating random combination. Please try again.")
+    
+    @app_commands.command(name="report", description="View weekly report of record changes and new achievements")
+    async def report_command(self, interaction: discord.Interaction):
+        """View weekly report of record changes and new achievements"""
+        await interaction.response.defer()
+        
+        try:
+            # Get weekly report data
+            report_data = await self.get_weekly_report_data()
+            
+            if not report_data:
+                await interaction.followup.send("❌ Unable to fetch weekly report data. Please try again later.")
+                return
+            
+            # Create embed with pagination
+            embed = self.create_weekly_report_embed(report_data, page=0)
+            
+            # Create view with pagination buttons (only if multiple pages)
+            all_items = (len(report_data['new_records']) + 
+                        len(report_data['record_changes']) + 
+                        len(report_data['improved_records']))
+            items_per_page = 3
+            total_pages = (all_items + items_per_page - 1) // items_per_page
+            
+            if total_pages > 1:
+                view = ReportPaginationView(report_data, interaction.user.id)
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            print(f"Error in report command: {e}")
+            await interaction.followup.send("❌ An error occurred while generating the weekly report. Please try again.")
 
 class StatsPaginationView(discord.ui.View):
     """View for paginating through stats results"""
@@ -844,6 +1150,172 @@ class PlayerPaginationView(discord.ui.View):
         embed.set_footer(text=f"Data from FastSnakeStats • {player_data['date']} • Page {page + 1}/{self.total_pages}")
         
         return embed
+
+class ReportPaginationView(discord.ui.View):
+    """View for paginating through report results"""
+    
+    def __init__(self, report_data: Dict, user_id: int):
+        super().__init__(timeout=300)  # 5 minute timeout
+        self.report_data = report_data
+        self.user_id = user_id
+        self.current_page = 0
+        self.items_per_page = 3
+        
+        # Calculate total items and pages
+        all_items = (len(report_data['new_records']) + 
+                    len(report_data['record_changes']) + 
+                    len(report_data['improved_records']))
+        self.total_pages = (all_items + self.items_per_page - 1) // self.items_per_page
+    
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
+            return
+        
+        self.current_page = max(0, self.current_page - 1)
+        await self.update_view(interaction)
+    
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
+            return
+        
+        self.current_page = min(self.total_pages - 1, self.current_page + 1)
+        await self.update_view(interaction)
+    
+    async def update_view(self, interaction: discord.Interaction):
+        """Update the view with new page"""
+        # Update button states
+        self.previous_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page >= self.total_pages - 1
+        
+        # Create new embed
+        embed = self.create_weekly_report_embed(self.report_data, self.current_page)
+        
+        await interaction.response.edit_message(embed=embed, view=self)
+    
+    def create_weekly_report_embed(self, report_data: Dict, page: int = 0) -> discord.Embed:
+        """Create a rich embed for weekly report display with pagination"""
+        embed = discord.Embed(
+            title="📈 Weekly Record Report",
+            description=f"Record changes from {report_data['week_ago_date']} to {report_data['current_date']}",
+            color=0x00ff88,  # Green for reports
+            timestamp=datetime.now()
+        )
+        
+        # Add summary statistics
+        embed.add_field(
+            name="📊 Summary",
+            value=f"**Total Changes:** {report_data['total_changes']}\n"
+                  f"**New Records:** {len(report_data['new_records'])}\n"
+                  f"**Record Changes:** {len(report_data['record_changes'])}\n"
+                  f"**Improved Records:** {len(report_data['improved_records'])}",
+            inline=False
+        )
+        
+        # Determine what to show based on page
+        all_items = []
+        
+        # Add new records
+        for item in report_data['new_records']:
+            all_items.append(('🆕', item, 'new'))
+        
+        # Add record changes
+        for item in report_data['record_changes']:
+            all_items.append(('🔄', item, 'change'))
+        
+        # Add improved records
+        for item in report_data['improved_records']:
+            all_items.append(('⚡', item, 'improved'))
+        
+        if not all_items:
+            embed.add_field(
+                name="📝 No Changes",
+                value="No record changes were detected in the last 7 days.",
+                inline=False
+            )
+        else:
+            # Paginate through all items
+            start_idx = page * self.items_per_page
+            end_idx = start_idx + self.items_per_page
+            page_items = all_items[start_idx:end_idx]
+            
+            changes_text = ""
+            for emoji, item, item_type in page_items:
+                settings_parts = item['settings'].split('|')
+                run_mode = settings_parts[4]
+                category_info = f"{settings_parts[3]} • {settings_parts[0]} • {settings_parts[1]} • {settings_parts[2]} • {run_mode}"
+                
+                if item_type == 'new':
+                    display_time = self._format_time_for_display(item['time'], run_mode)
+                    changes_text += f"{emoji} **NEW RECORD** - {category_info}\n"
+                    changes_text += f"   👤 **{item['player']}** • {display_time} • {item['date']}\n\n"
+                
+                elif item_type == 'change':
+                    old_display_time = self._format_time_for_display(item['old_time'], run_mode)
+                    new_display_time = self._format_time_for_display(item['new_time'], run_mode)
+                    changes_text += f"{emoji} **RECORD CHANGE** - {category_info}\n"
+                    changes_text += f"   🔄 **{item['old_player']}** → **{item['new_player']}**\n"
+                    changes_text += f"   ⏱️ {old_display_time} → {new_display_time}\n"
+                    if item['improvement']:
+                        improvement_str = self._format_improvement(item['improvement'])
+                        changes_text += f"   📈 Improvement: {improvement_str}\n"
+                    changes_text += f"   📅 {item['new_date']}\n\n"
+                
+                elif item_type == 'improved':
+                    old_display_time = self._format_time_for_display(item['old_time'], run_mode)
+                    new_display_time = self._format_time_for_display(item['new_time'], run_mode)
+                    changes_text += f"{emoji} **IMPROVED RECORD** - {category_info}\n"
+                    changes_text += f"   👤 **{item['player']}**\n"
+                    changes_text += f"   ⏱️ {old_display_time} → {new_display_time}\n"
+                    if item['improvement']:
+                        improvement_str = self._format_improvement(item['improvement'])
+                        changes_text += f"   📈 Improvement: {improvement_str}\n"
+                    changes_text += f"   📅 {item['new_date']}\n\n"
+            
+            if not changes_text:
+                changes_text = "No more changes to show."
+            
+            embed.add_field(
+                name="📝 Record Changes",
+                value=changes_text,
+                inline=False
+            )
+        
+        # Add footer with page info
+        embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{self.total_pages}")
+        
+        return embed
+    
+    def _format_improvement(self, improvement_ms: float) -> str:
+        """Format improvement time in a readable way"""
+        if improvement_ms < 1000:
+            return f"{improvement_ms:.0f}ms"
+        elif improvement_ms < 60000:
+            seconds = improvement_ms / 1000
+            return f"{seconds:.1f}s"
+        else:
+            minutes = improvement_ms / 60000
+            return f"{minutes:.1f}m"
+    
+    def _format_time_for_display(self, time_str: str, run_mode: str) -> str:
+        """Format time string for display, handling High Score mode specially"""
+        if run_mode == "High Score":
+            # Check for both old format (0m 0s Xms) and new format (Xs Yms)
+            if time_str.startswith("0m 0s ") or (time_str.endswith("ms") and "m " not in time_str and "h " not in time_str):
+                # Extract the milliseconds part for High Score
+                if time_str.startswith("0m 0s "):
+                    score = time_str.replace("0m 0s ", "").replace("ms", "")
+                else:
+                    # New format: "Xs Yms" -> extract Y
+                    score = time_str.split("s ")[1].replace("ms", "")
+                return f"{score} apples"
+            else:
+                return time_str
+        else:
+            return time_str
 
 async def setup(bot):
     """Setup function for the cog"""
