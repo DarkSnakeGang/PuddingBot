@@ -8,7 +8,7 @@ PuddingBot is a Discord bot designed for the Google Snake gaming community, now 
 - **Local AI Processing**: Uses Ollama for AI responses (no external API dependencies)
 - **Google Snake Expertise**: Extensive knowledge about Google Snake mechanics, speedrunning, and community
 - **Wall Pattern Solver**: Advanced algorithm to solve wall patterns in Google Snake
-- **GIF Responses**: Tenor API integration for animated responses
+- **GIF Responses**: KLIPY API integration for animated responses
 - **Channel Management**: Special handling for specific Discord channels
 
 ## Prerequisites
@@ -22,7 +22,7 @@ PuddingBot is a Discord bot designed for the Google Snake gaming community, now 
    Create a `.env` file in the project root:
    ```
    DISCORD_TOKEN=your_discord_bot_token_here
-   TENOR_KEY=your_tenor_api_key_here
+   KLIPY_KEY=your_klipy_api_key_here
    ```
 
 2. **Build and run with Docker**:

@@ -5,8 +5,24 @@ import wall
 import os
 import asyncio
 
+def _extract_klipy_gif_url(gif_data):
+    file_data = gif_data.get('file') or gif_data.get('files') or {}
+    if 'gif' in file_data and isinstance(file_data['gif'], dict):
+        return file_data['gif'].get('url')
+
+    for size in ('md', 'hd', 'sm', 'xs'):
+        size_data = file_data.get(size) or {}
+        for fmt in ('gif', 'webp', 'mp4', 'webm'):
+            media = size_data.get(fmt) or {}
+            if media.get('url'):
+                return media['url']
+    return None
+
 def get_random_funny_gif(api_key, emotion):
-    url = 'https://tenor.googleapis.com/v2/search'
+    if not api_key:
+        return "GIF API key not configured."
+
+    url = f'https://api.klipy.com/api/v1/{api_key}/gifs/search'
     key_words = ['happy', 'sad', 'angry', 'excited', 'nervous', 'frustrated', 'calm', 'anxious', 'proud', 'confused',
  'shocked', 'embarrassed', 'grateful', 'jealous', 'curious', 'bored', 'hopeful', 'lonely', 'fearful', 
  'amused', 'content', 'disappointed', 'annoyed', 'surprised', 'relieved', 'guilty', 'ashamed', 'ecstatic', 
@@ -21,34 +37,30 @@ def get_random_funny_gif(api_key, emotion):
  'serene', 'flattered', 'lonely', 'fulfilled', 'exhausted', 'tender', 'impressed', 'compassionate', 
  'delighted', 'hesitant', 'thrilled', 'sympathetic', 'intrigued']
 
-    tenor_limit = 1
     if emotion:
         query = emotion
+        per_page = 8
     else:
         query = choice(key_words) + ' anime girl'
-        tenor_limit = 20
+        per_page = 20
+
     params = {
         'q': query,
-        'key': api_key,
-        'limit': tenor_limit
+        'per_page': per_page,
     }
 
     try:
         response = rq.get(url, params=params)
         response.raise_for_status()
-        data = response.json()
+        payload = response.json()
 
-        results = data.get('results', [])
-        if not results:
+        page_data = payload.get('data', {})
+        results = page_data.get('data', []) if isinstance(page_data, dict) else page_data
+        gifs = [item for item in results if item.get('type') != 'ad']
+        if not gifs:
             return "No GIFs found."
 
-        gif_data = choice(results)
-        media_formats = gif_data.get('media_formats', {})
-        gif_url = media_formats.get('gif', {}).get('url')
-
-        if not gif_url:
-            gif_url = media_formats.get('loopedmp4', {}).get('url')
-
+        gif_url = _extract_klipy_gif_url(choice(gifs))
         return gif_url if gif_url else "No suitable GIF found."
 
     except rq.exceptions.RequestException as e:
@@ -135,7 +147,7 @@ def get_response(user_input: str, user = "Nobody") -> str:
                    'https://tenor.com/view/pingas-butt-lame-fat-sitdown-gif-4771119']
 
     if lowered in cringe_list:
-        return get_random_funny_gif(os.getenv('TENOR_KEY'), False)
+        return get_random_funny_gif(os.getenv('KLIPY_KEY'), False)
 
     if lowered == 'roll dice':
         return str(randint(1, 6))
@@ -144,10 +156,10 @@ def get_response(user_input: str, user = "Nobody") -> str:
         return '<:poi:1362102081502318742>'
 
     if 'gif' == lowered[:3]:
-        return get_random_funny_gif(os.getenv('TENOR_KEY'), lowered.replace("gif", ""))
+        return get_random_funny_gif(os.getenv('KLIPY_KEY'), lowered.replace("gif", ""))
     
     if 'i completely agree' == lowered[:len('I completely agree')]:
-        return get_random_funny_gif(os.getenv('TENOR_KEY'), 'I completely agree thanos')
+        return get_random_funny_gif(os.getenv('KLIPY_KEY'), 'I completely agree thanos')
 
     if "how" in lowered:
         if "timer" in lowered:
