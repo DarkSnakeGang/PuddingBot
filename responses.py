@@ -159,7 +159,7 @@ def get_response(user_input: str, user = "Nobody") -> str:
         return get_random_funny_gif(os.getenv('KLIPY_KEY'), lowered.replace("gif", ""))
     
     if 'i completely agree' == lowered[:len('I completely agree')]:
-        return get_random_funny_gif(os.getenv('KLIPY_KEY'), 'I completely agree thanos')
+        return 'https://klipy.com/gifs/i-completely-agree-i-agree'
 
     if "how" in lowered:
         if "timer" in lowered:
