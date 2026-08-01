@@ -180,20 +180,42 @@ def _ollama_chat(messages: List[Dict[str, Any]], use_tools: bool = True) -> Dict
     return response.json()
 
 
+def _search_query_from_user_text(text: str) -> str:
+    """Clean Discord prompt noise into a usable search query."""
+    query = text or ""
+    query = re.sub(
+        r",?\s*give a short answer but never mention that I asked for a short answer\s*$",
+        "",
+        query,
+        flags=re.IGNORECASE,
+    )
+    query = re.sub(r"https?://\S+", " ", query)
+    query = re.sub(r"\s+", " ", query).strip(" ,.")
+    return query
+
+
+_SKIP_SEARCH_RE = re.compile(
+    r"^(hi|hey|hello|yo|sup|thanks|thank you|ty|ok|okay|k|lol|lmao|gm|gn)\W*$",
+    re.IGNORECASE,
+)
+
+
 def chat_with_gpt(messages: List[Dict[str, str]]) -> str:
     """
-    Chat with local Ollama, with optional web_search / web_fetch tool calls.
-    The model stays local; tools use the host/container network to reach the internet.
+    Chat with local Ollama. Always web-searches for most user messages, then
+    answers with tools still available for follow-up fetches.
     """
-    # Work on a copy so caller history is not mutated with tool messages
     chat_messages: List[Dict[str, Any]] = [dict(m) for m in messages]
 
-    # If the latest user message contains URLs, prefetch them so even weak models get context
     last_user = next((m for m in reversed(chat_messages) if m.get("role") == "user"), None)
     if last_user:
-        urls = re.findall(r"https?://[^\s<>\")]+", last_user.get("content", ""))
+        user_text = last_user.get("content", "")
+
+        # Always prefetch any URLs the user included
+        urls = re.findall(r"https?://[^\s<>\")]+", user_text)
         for url in urls[:2]:
             fetched = web_fetch(url.rstrip(".,);]"))
+            print(f"[DEBUG] Prefetch URL: {url}")
             chat_messages.append(
                 {
                     "role": "system",
@@ -201,13 +223,42 @@ def chat_with_gpt(messages: List[Dict[str, str]]) -> str:
                 }
             )
 
+        # Always search for almost every message (skip only tiny greetings)
+        search_query = _search_query_from_user_text(user_text)
+        if search_query and not _SKIP_SEARCH_RE.match(search_query):
+            print(f"[DEBUG] Auto web_search: {search_query!r}")
+            search_results = web_search(search_query, max_results=5)
+            chat_messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "Live web search results for this user message. "
+                        "Base your answer on these results whenever relevant; "
+                        "prefer them over your training memory:\n"
+                        f"{search_results}"
+                    ),
+                }
+            )
+
+            # Also fetch the top result page for richer context
+            top_urls = re.findall(r"https?://[^\s]+", search_results)
+            for url in top_urls[:1]:
+                if url in urls:
+                    continue
+                print(f"[DEBUG] Auto web_fetch top result: {url}")
+                chat_messages.append(
+                    {
+                        "role": "system",
+                        "content": f"Top search result page content:\n{web_fetch(url)}",
+                    }
+                )
+
     try:
         for _ in range(MAX_TOOL_ROUNDS):
             result = _ollama_chat(chat_messages, use_tools=True)
             message = result.get("message") or {}
             tool_calls = message.get("tool_calls") or []
 
-            # Keep assistant turn (may include tool_calls)
             chat_messages.append(message)
 
             if not tool_calls:
@@ -231,7 +282,6 @@ def chat_with_gpt(messages: List[Dict[str, str]]) -> str:
                     }
                 )
 
-        # Final answer without tools if tool loop produced nothing useful
         result = _ollama_chat(chat_messages, use_tools=False)
         content = ((result.get("message") or {}).get("content") or "").strip()
         return content or "Sorry, I couldn't generate a response at the moment."
