@@ -3,7 +3,24 @@ import requests as rq
 import gpt
 import wall
 import os
+import re
 import asyncio
+
+POI_EMOJI_ID = os.getenv("POI_EMOJI_ID", "1362102081502318742")
+POI_EMOJI = f"<:poi:{POI_EMOJI_ID}>"
+_POI_ANY_RE = re.compile(r"<a?:poi:\d+>", re.IGNORECASE)
+_POI_ONLY_RE = re.compile(rf"^<a?:poi:{re.escape(POI_EMOJI_ID)}>$")
+
+
+def is_allowed_poi_message(content: str) -> bool:
+    """True if the message is exactly the current poi emoji and nothing else."""
+    return bool(_POI_ONLY_RE.match((content or "").strip()))
+
+
+def mentions_poi_emoji(content: str) -> bool:
+    """True if the message contains any poi custom emoji (any id)."""
+    return bool(_POI_ANY_RE.search(content or ""))
+
 
 def _extract_klipy_gif_url(gif_data):
     file_data = gif_data.get('file') or gif_data.get('files') or {}
@@ -152,8 +169,8 @@ def get_response(user_input: str, user = "Nobody") -> str:
     if lowered == 'roll dice':
         return str(randint(1, 6))
     
-    if "<:" in lowered and ":1362102081502318742>" in lowered:
-        return '<:poi:1362102081502318742>'
+    if mentions_poi_emoji(user_input):
+        return POI_EMOJI
 
     if 'gif' == lowered[:3]:
         return get_random_funny_gif(os.getenv('KLIPY_KEY'), lowered.replace("gif", ""))
