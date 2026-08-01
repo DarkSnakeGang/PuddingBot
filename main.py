@@ -1,7 +1,7 @@
-from typing import Final
+from typing import Final, Optional
 import os 
 from dotenv import load_dotenv
-from discord import Intents, Message, utils
+from discord import Intents, Message, utils, Object
 from discord.ext import commands
 from responses import get_response
 import asyncio
@@ -9,6 +9,7 @@ import asyncio
 # Load Token
 load_dotenv()
 TOKEN: Final[str] = os.getenv('DISCORD_TOKEN')
+GUILD_ID: Final[Optional[str]] = os.getenv('DISCORD_GUILD_ID')
 
 # Setup Bot with commands framework
 intents: Intents = Intents.default()
@@ -38,10 +39,17 @@ async def send_message(message: Message, user_message: str, user = "Nobody") -> 
 async def on_ready() -> None:
     print(f'{bot.user} is now running')
     
-    # Sync slash commands
+    # Sync slash commands (guild sync is instant; global sync can take up to an hour)
     try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} command(s)")
+        if GUILD_ID:
+            guild = Object(id=int(GUILD_ID))
+            bot.tree.copy_global_to(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+            print(f"Synced {len(synced)} guild command(s) to guild {GUILD_ID}")
+        else:
+            synced = await bot.tree.sync()
+            print(f"Synced {len(synced)} global command(s)")
+        print("Commands:", ", ".join(f"/{cmd.name}" for cmd in synced))
     except Exception as e:
         print(f"Error syncing commands: {e}")
 

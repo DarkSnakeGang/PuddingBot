@@ -8,6 +8,11 @@ from datetime import datetime
 from github_cache_fetcher import github_cache_fetcher
 import data_management as dm
 
+
+def _settings_choices(options: List[str]) -> List[app_commands.Choice[str]]:
+    return [app_commands.Choice(name=option, value=option) for option in options]
+
+
 class FastSnakeStats(commands.Cog):
     """FastSnakeStats Discord bot integration"""
     
@@ -651,7 +656,7 @@ class FastSnakeStats(commands.Cog):
     
     @app_commands.command(name="record", description="Get world record for specific settings")
     @app_commands.describe(
-        game_mode="Game mode (Classic, Wall, Portal, etc.)",
+        game_mode="Game mode (Classic, Wall, Portal, Bridge, etc.)",
         apple_amount="Number of apples",
         speed="Game speed",
         size="Game size",
@@ -660,70 +665,38 @@ class FastSnakeStats(commands.Cog):
     )
     @app_commands.autocomplete(date=record_date_autocomplete)
     @app_commands.choices(
-        game_mode=[
-            app_commands.Choice(name="Classic", value="Classic"),
-            app_commands.Choice(name="Wall", value="Wall"),
-            app_commands.Choice(name="Portal", value="Portal"),
-            app_commands.Choice(name="Cheese", value="Cheese"),
-            app_commands.Choice(name="Borderless", value="Borderless"),
-            app_commands.Choice(name="Twin", value="Twin"),
-            app_commands.Choice(name="Winged", value="Winged"),
-            app_commands.Choice(name="Yin Yang", value="Yin Yang"),
-            app_commands.Choice(name="Key", value="Key"),
-            app_commands.Choice(name="Sokoban", value="Sokoban"),
-            app_commands.Choice(name="Poison", value="Poison"),
-            app_commands.Choice(name="Dimension", value="Dimension"),
-            app_commands.Choice(name="Minesweeper", value="Minesweeper"),
-            app_commands.Choice(name="Statue", value="Statue"),
-            app_commands.Choice(name="Light", value="Light"),
-            app_commands.Choice(name="Shield", value="Shield"),
-            app_commands.Choice(name="Arrow", value="Arrow"),
-            app_commands.Choice(name="Hotdog", value="Hotdog"),
-            app_commands.Choice(name="Magnet", value="Magnet"),
-            app_commands.Choice(name="Gate", value="Gate"),
-            app_commands.Choice(name="Bridge", value="Bridge"),
-            app_commands.Choice(name="Peaceful", value="Peaceful")
-        ],
-        apple_amount=[
-            app_commands.Choice(name="1 Apple", value="1 Apple"),
-            app_commands.Choice(name="3 Apples", value="3 Apples"),
-            app_commands.Choice(name="5 Apples", value="5 Apples"),
-            app_commands.Choice(name="10 Apples", value="10 Apples"),
-            app_commands.Choice(name="Dice", value="Dice"),
-            app_commands.Choice(name="Bomb", value="Bomb")
-        ],
-        speed=[
-            app_commands.Choice(name="Normal", value="Normal"),
-            app_commands.Choice(name="Slow", value="Slow"),
-            app_commands.Choice(name="Fast", value="Fast")
-        ],
-        size=[
-            app_commands.Choice(name="Standard", value="Standard"),
-            app_commands.Choice(name="Small", value="Small"),
-            app_commands.Choice(name="Large", value="Large")
-        ],
-        run_mode=[
-            app_commands.Choice(name="25 Apples", value="25 Apples"),
-            app_commands.Choice(name="50 Apples", value="50 Apples"),
-            app_commands.Choice(name="100 Apples", value="100 Apples"),
-            app_commands.Choice(name="All Apples", value="All Apples"),
-            app_commands.Choice(name="High Score", value="High Score")
-        ]
+        game_mode=_settings_choices(dm.get_ordered_gamemodes()),
+        apple_amount=_settings_choices(dm.get_ordered_apple_amounts()),
+        speed=_settings_choices(dm.get_ordered_speeds()),
+        size=_settings_choices(dm.get_ordered_sizes()),
+        run_mode=_settings_choices(dm.get_ordered_run_modes()),
     )
     async def record_command(self, interaction: discord.Interaction, game_mode: str, apple_amount: str, speed: str, size: str, run_mode: str, date: Optional[str] = None):
         """Get world record for specific settings"""
         await interaction.response.defer()
         
         try:
+            if not dm.validate_settings(apple_amount, speed, size, game_mode):
+                await interaction.followup.send(
+                    f"❌ Invalid settings combination. Check `/record` options and try again."
+                )
+                return
+
             # Get record data
             record_data = await self.get_record_data(apple_amount, speed, size, game_mode, date, run_mode)
             
             if not record_data:
+                settings_key = dm.get_settings_key(apple_amount, speed, size, game_mode, run_mode)
                 if date:
-                    await interaction.followup.send(f"❌ No data available for date: {date}. Use `/available-dates` to see working dates.")
+                    await interaction.followup.send(
+                        f"❌ No record found for `{settings_key}` on {date}. "
+                        "Use `/available-dates` to see working dates."
+                    )
                 else:
-                    settings_key = dm.get_settings_key(apple_amount, speed, size, game_mode, run_mode)
-                    await interaction.followup.send(f"❌ No record found for: {settings_key}")
+                    await interaction.followup.send(
+                        f"❌ No record found for `{settings_key}`. "
+                        "This category may not have runs in the cache yet."
+                    )
                 return
             
             # Create embed
