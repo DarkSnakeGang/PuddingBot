@@ -39,6 +39,11 @@ def get_random_funny_gif(api_key, emotion):
     if not api_key:
         return "GIF API key not configured."
 
+    # Docker --env-file can leave literal quotes around values
+    api_key = str(api_key).strip().strip('"').strip("'")
+    if not api_key:
+        return "GIF API key not configured."
+
     url = f'https://api.klipy.com/api/v1/{api_key}/gifs/search'
     key_words = ['happy', 'sad', 'angry', 'excited', 'nervous', 'frustrated', 'calm', 'anxious', 'proud', 'confused',
  'shocked', 'embarrassed', 'grateful', 'jealous', 'curious', 'bored', 'hopeful', 'lonely', 'fearful', 
@@ -55,7 +60,7 @@ def get_random_funny_gif(api_key, emotion):
  'delighted', 'hesitant', 'thrilled', 'sympathetic', 'intrigued']
 
     if emotion:
-        query = emotion
+        query = str(emotion).strip()
         per_page = 8
     else:
         query = choice(key_words) + ' anime girl'
@@ -184,7 +189,7 @@ def get_response(user_input: str, user="Nobody", status_notify=None) -> str:
         return POI_EMOJI
 
     if 'gif' == lowered[:3]:
-        return get_random_funny_gif(os.getenv('KLIPY_KEY'), lowered.replace("gif", ""))
+        return get_random_funny_gif(os.getenv('KLIPY_KEY'), lowered[3:].strip())
     
     if 'i completely agree' == lowered[:len('I completely agree')]:
         return 'https://klipy.com/gifs/i-completely-agree-i-agree'
