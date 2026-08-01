@@ -199,6 +199,31 @@ _SKIP_SEARCH_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ROLE_PREFIX_RE = re.compile(
+    r"^\s*(?:assistant|assistent|ai|bot|puddingbot)\s*:?\s*",
+    re.IGNORECASE,
+)
+_STANDALONE_ROLE_LINE_RE = re.compile(
+    r"^(?:assistant|assistent|ai|bot|puddingbot)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _clean_reply(text: str) -> str:
+    """Strip leaked chat-role labels the small model sometimes echoes."""
+    if not text:
+        return text
+    lines = text.replace("\r\n", "\n").split("\n")
+    while lines and (not lines[0].strip() or _STANDALONE_ROLE_LINE_RE.match(lines[0].strip())):
+        lines.pop(0)
+    cleaned = "\n".join(lines).strip()
+    for _ in range(3):
+        updated = _ROLE_PREFIX_RE.sub("", cleaned, count=1).strip()
+        if updated == cleaned:
+            break
+        cleaned = updated
+    return cleaned
+
 
 def chat_with_gpt(messages: List[Dict[str, str]]) -> str:
     """
@@ -232,9 +257,11 @@ def chat_with_gpt(messages: List[Dict[str, str]]) -> str:
                 {
                     "role": "system",
                     "content": (
-                        "Live web search results for this user message. "
-                        "Base your answer on these results whenever relevant; "
-                        "prefer them over your training memory:\n"
+                        "Live web search results for this user message are below. "
+                        "You DO have internet access through these results. "
+                        "NEVER say you lack real-time access, cannot browse, or cannot check CNN/news. "
+                        "Answer using these results. If they are thin, still summarize what they contain "
+                        "instead of refusing.\n\n"
                         f"{search_results}"
                     ),
                 }
@@ -262,7 +289,7 @@ def chat_with_gpt(messages: List[Dict[str, str]]) -> str:
             chat_messages.append(message)
 
             if not tool_calls:
-                content = (message.get("content") or "").strip()
+                content = _clean_reply((message.get("content") or "").strip())
                 if content:
                     return content
                 break
@@ -283,7 +310,7 @@ def chat_with_gpt(messages: List[Dict[str, str]]) -> str:
                 )
 
         result = _ollama_chat(chat_messages, use_tools=False)
-        content = ((result.get("message") or {}).get("content") or "").strip()
+        content = _clean_reply(((result.get("message") or {}).get("content") or "").strip())
         return content or "Sorry, I couldn't generate a response at the moment."
 
     except requests.exceptions.RequestException as e:
