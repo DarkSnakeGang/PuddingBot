@@ -9,10 +9,18 @@ import asyncio
 
 # Load Token
 load_dotenv()
-TOKEN: Final[Optional[str]] = os.getenv('DISCORD_TOKEN')
-GUILD_ID: Final[Optional[str]] = os.getenv('DISCORD_GUILD_ID')
-POI_CHANNEL_NAME: Final[str] = os.getenv('POI_CHANNEL_NAME', 'poi-🐡')
-POI_CHANNEL_ID: Final[Optional[str]] = os.getenv('POI_CHANNEL_ID', '1284209751952986223')
+
+def _env(name: str, default: Optional[str] = None) -> Optional[str]:
+    value = os.getenv(name, default)
+    if value is None:
+        return None
+    # Docker --env-file keeps surrounding quotes; strip them
+    return value.strip().strip('"').strip("'")
+
+TOKEN: Final[Optional[str]] = _env('DISCORD_TOKEN')
+GUILD_ID: Final[Optional[str]] = _env('DISCORD_GUILD_ID')
+POI_CHANNEL_NAME: Final[str] = _env('POI_CHANNEL_NAME', 'poi-🐡') or 'poi-🐡'
+POI_CHANNEL_ID: Final[Optional[str]] = _env('POI_CHANNEL_ID', '1284209751952986223')
 
 if not TOKEN:
     raise SystemExit(
@@ -26,7 +34,13 @@ intents.message_content = True
 intents.messages = True  # Enable message intents
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-_poi_purge_lock = asyncio.Lock()
+_poi_purge_lock: Optional[asyncio.Lock] = None
+
+def _get_poi_purge_lock() -> asyncio.Lock:
+    global _poi_purge_lock
+    if _poi_purge_lock is None:
+        _poi_purge_lock = asyncio.Lock()
+    return _poi_purge_lock
 
 def is_poi_channel(channel) -> bool:
     if channel is None:
@@ -84,7 +98,8 @@ async def on_message(message: Message) -> None:
     print(f'[{channel}] {username}: "{user_message}"')
     if in_poi:
         # Reply first, purge in background so old-message cleanup doesn't block poi replies
-        if not _poi_purge_lock.locked():
+        lock = _get_poi_purge_lock()
+        if not lock.locked():
             asyncio.create_task(purge_non_poi_messages(message.channel))
     elif channel == "Direct Message with Unknown User":
         return
@@ -123,7 +138,7 @@ async def purge_non_poi_messages(channel) -> None:
     if not is_poi_channel(channel):
         return
 
-    async with _poi_purge_lock:
+    async with _get_poi_purge_lock():
         messages_to_delete: List[Message] = []
         try:
             # limit=None scans the entire channel history

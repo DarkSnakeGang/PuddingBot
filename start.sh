@@ -54,11 +54,6 @@ while true; do
         echo "Update restart requested, reloading bot..."
         continue
     fi
-    break
+    echo "Discord bot stopped with code $BOT_EXIT_CODE. Retrying in 5s..."
+    sleep 5
 done
-
-echo "Discord bot stopped with code $BOT_EXIT_CODE. Shutting down Ollama..."
-kill "$OLLAMA_PID"
-wait "$OLLAMA_PID"
-echo "Shutdown complete."
-exit "$BOT_EXIT_CODE"
