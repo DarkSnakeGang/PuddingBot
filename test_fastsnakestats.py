@@ -93,6 +93,12 @@ async def test_data_management():
     valid = dm.validate_settings("1 Apple", "Normal", "Standard", "Classic")
     print(f"   Valid settings: {valid}")
     
+    bridge_valid = dm.validate_settings("10 Apples", "Normal", "Standard", "Bridge")
+    print(f"   Bridge + 10 Apples settings: {bridge_valid}")
+    
+    bomb_valid = dm.validate_settings("Bomb", "Fast", "Large", "Classic")
+    print(f"   Bomb settings: {bomb_valid}")
+    
     invalid = dm.validate_settings("Invalid", "Normal", "Standard", "Classic")
     print(f"   Invalid settings: {invalid}")
     

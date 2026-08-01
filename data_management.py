@@ -6,7 +6,9 @@ APPLE_AMOUNTS = {
     "1 Apple": {"visible": True, "icon": "https://i.ibb.co/rGZV12Ym/count-00-png.png", "id": "count_00"},
     "3 Apples": {"visible": True, "icon": "https://i.ibb.co/V0gcrCmM/count-01-png.png", "id": "count_01"},
     "5 Apples": {"visible": True, "icon": "https://i.ibb.co/SSc8jww/count-02-png.png", "id": "count_02"},
-    "Dice": {"visible": True, "icon": "https://i.ibb.co/8DzSj9hV/count-03-png.png", "id": "count_03"}
+    "10 Apples": {"visible": True, "icon": "https://i.ibb.co/gbTbZvw8/count-03.png", "id": "count_03"},
+    "Dice": {"visible": True, "icon": "https://i.ibb.co/8DzSj9hV/count-03-png.png", "id": "count_04"},
+    "Bomb": {"visible": True, "icon": "https://i.ibb.co/kVXQJrVp/count-05.png", "id": "count_05"}
 }
 
 SPEEDS = {
@@ -42,6 +44,7 @@ GAMEMODES = {
     "Hotdog": {"visible": True, "icon": "https://i.ibb.co/FF4hdbz/trophy-17-png.png", "id": "trophy_18"},
     "Magnet": {"visible": True, "icon": "https://i.ibb.co/nMbMjjfL/trophy-18-png.png", "id": "trophy_19"},
     "Gate": {"visible": True, "icon": "https://i.ibb.co/1tp8JqBM/trophy-19-png.png", "id": "trophy_20"},
+    "Bridge": {"visible": True, "icon": "https://www.google.com/logos/fnbx/snake_arcade/v22/trophy_20.png", "id": "trophy_22"},
     "Peaceful": {"visible": True, "icon": "https://i.ibb.co/jvrCYD8r/trophy-17-png.png", "id": "trophy_21"}
 }
 
@@ -166,7 +169,7 @@ def validate_settings(apple_amount: str, speed: str, size: str, gamemode: str) -
 
 def get_ordered_apple_amounts() -> list:
     """Get ordered list of apple amounts"""
-    return ["1 Apple", "3 Apples", "5 Apples", "Dice"]
+    return ["1 Apple", "3 Apples", "5 Apples", "10 Apples", "Dice", "Bomb"]
 
 def get_ordered_speeds() -> list:
     """Get ordered list of speeds"""

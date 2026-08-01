@@ -93,14 +93,14 @@ async def read_channel_history(channel, limit: int = 1000):
         else:
             print(f'Channel "{channel}" not found.')
 
-# Load FastSnakeStats cog
 async def load_extensions():
     """Load all cogs"""
-    try:
-        await bot.load_extension('fastsnakestats')
-        print("✅ FastSnakeStats cog loaded successfully")
-    except Exception as e:
-        print(f"❌ Error loading FastSnakeStats cog: {e}")
+    for extension in ('admin', 'fastsnakestats'):
+        try:
+            await bot.load_extension(extension)
+            print(f"Loaded {extension} cog successfully")
+        except Exception as e:
+            print(f"Error loading {extension} cog: {e}")
 
 # Main entry point
 async def main() -> None:

@@ -681,13 +681,16 @@ class FastSnakeStats(commands.Cog):
             app_commands.Choice(name="Hotdog", value="Hotdog"),
             app_commands.Choice(name="Magnet", value="Magnet"),
             app_commands.Choice(name="Gate", value="Gate"),
+            app_commands.Choice(name="Bridge", value="Bridge"),
             app_commands.Choice(name="Peaceful", value="Peaceful")
         ],
         apple_amount=[
             app_commands.Choice(name="1 Apple", value="1 Apple"),
             app_commands.Choice(name="3 Apples", value="3 Apples"),
             app_commands.Choice(name="5 Apples", value="5 Apples"),
-            app_commands.Choice(name="Dice", value="Dice")
+            app_commands.Choice(name="10 Apples", value="10 Apples"),
+            app_commands.Choice(name="Dice", value="Dice"),
+            app_commands.Choice(name="Bomb", value="Bomb")
         ],
         speed=[
             app_commands.Choice(name="Normal", value="Normal"),
