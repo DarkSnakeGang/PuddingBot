@@ -8,14 +8,16 @@ RESTART_EXIT_CODE=42
 # Allow git operations when running as root inside Docker
 git config --global --add safe.directory /app
 
-# First run: connect /app to the remote repo so /update can git pull later
+# First run: connect /app to the remote repo so /update can sync later
 if [ ! -d /app/.git ]; then
     echo "First run: initializing git repository in /app..."
     cd /app
     git init
     git remote add origin "$REPO_URL"
     git fetch origin "$GIT_BRANCH"
-    git checkout -B "$GIT_BRANCH" "origin/$GIT_BRANCH"
+    # Force match remote even if Docker COPY left untracked files in /app
+    git checkout -f -B "$GIT_BRANCH" "origin/$GIT_BRANCH"
+    git clean -fd -e .env -e '.env.*'
     echo "Repository initialized at $(git rev-parse --short HEAD)"
 fi
 

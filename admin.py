@@ -58,14 +58,38 @@ class Admin(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         try:
-            pull_result = _run_command(
-                ["git", "pull", "origin", GIT_BRANCH],
+            # Hard sync to origin — avoids "untracked files would be overwritten" from Docker COPY leftovers
+            fetch_result = _run_command(
+                ["git", "fetch", "origin", GIT_BRANCH],
                 timeout=120,
             )
-            if pull_result.returncode != 0:
-                error_output = (pull_result.stderr or pull_result.stdout or "Unknown error").strip()
+            if fetch_result.returncode != 0:
+                error_output = (fetch_result.stderr or fetch_result.stdout or "Unknown error").strip()
                 await interaction.followup.send(
-                    f"Git pull failed:\n```\n{error_output[:1500]}\n```"
+                    f"Git fetch failed:\n```\n{error_output[:1500]}\n```"
+                )
+                return
+
+            reset_result = _run_command(
+                ["git", "reset", "--hard", f"origin/{GIT_BRANCH}"],
+                timeout=60,
+            )
+            if reset_result.returncode != 0:
+                error_output = (reset_result.stderr or reset_result.stdout or "Unknown error").strip()
+                await interaction.followup.send(
+                    f"Git reset failed:\n```\n{error_output[:1500]}\n```"
+                )
+                return
+
+            # Remove leftover untracked files from image COPY, but keep secrets
+            clean_result = _run_command(
+                ["git", "clean", "-fd", "-e", ".env", "-e", ".env.*"],
+                timeout=60,
+            )
+            if clean_result.returncode != 0:
+                error_output = (clean_result.stderr or clean_result.stdout or "Unknown error").strip()
+                await interaction.followup.send(
+                    f"Git clean failed:\n```\n{error_output[:1500]}\n```"
                 )
                 return
 
@@ -76,17 +100,17 @@ class Admin(commands.Cog):
             if pip_result.returncode != 0:
                 error_output = (pip_result.stderr or pip_result.stdout or "Unknown error").strip()
                 await interaction.followup.send(
-                    "Git pull succeeded, but dependency install failed:\n"
+                    "Git update succeeded, but dependency install failed:\n"
                     f"```\n{error_output[:1500]}\n```"
                 )
                 return
 
             commit_result = _run_command(["git", "rev-parse", "--short", "HEAD"], timeout=10)
             commit_hash = commit_result.stdout.strip() or "unknown"
-            pull_output = pull_result.stdout.strip() or "Already up to date."
+            reset_output = (reset_result.stdout or "").strip() or f"Reset to origin/{GIT_BRANCH}"
 
             await interaction.followup.send(
-                f"Updated to `{commit_hash}`.\n```\n{pull_output}\n```\nRestarting bot..."
+                f"Updated to `{commit_hash}`.\n```\n{reset_output}\n```\nRestarting bot..."
             )
 
             await self.bot.close()
