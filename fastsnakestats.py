@@ -9,10 +9,6 @@ from github_cache_fetcher import github_cache_fetcher
 import data_management as dm
 
 
-def _settings_choices(options: List[str]) -> List[app_commands.Choice[str]]:
-    return [app_commands.Choice(name=option, value=option) for option in options]
-
-
 class FastSnakeStats(commands.Cog):
     """FastSnakeStats Discord bot integration"""
     
@@ -351,6 +347,37 @@ class FastSnakeStats(commands.Cog):
     async def stats_date_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
         """Autocomplete for date parameter in stats command"""
         return await self.get_date_choices()
+
+    def _filter_setting_choices(self, options: List[str], current: str) -> List[app_commands.Choice[str]]:
+        if current:
+            needle = current.lower()
+            options = [option for option in options if needle in option.lower()]
+        return [app_commands.Choice(name=option, value=option) for option in options[:25]]
+
+    async def record_game_mode_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        return self._filter_setting_choices(dm.get_ordered_gamemodes(), current)
+
+    async def record_apple_amount_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        return self._filter_setting_choices(dm.get_ordered_apple_amounts(), current)
+
+    async def record_speed_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        return self._filter_setting_choices(dm.get_ordered_speeds(), current)
+
+    async def record_size_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        return self._filter_setting_choices(dm.get_ordered_sizes(), current)
+
+    async def record_run_mode_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        return self._filter_setting_choices(dm.get_ordered_run_modes(), current)
     
     def get_random_combination(self) -> Dict[str, str]:
         """Generate a random combination of game settings"""
@@ -663,13 +690,13 @@ class FastSnakeStats(commands.Cog):
         run_mode="Run mode (25 Apples, 50 Apples, etc.)",
         date="Historical date - optional"
     )
-    @app_commands.autocomplete(date=record_date_autocomplete)
-    @app_commands.choices(
-        game_mode=_settings_choices(dm.get_ordered_gamemodes()),
-        apple_amount=_settings_choices(dm.get_ordered_apple_amounts()),
-        speed=_settings_choices(dm.get_ordered_speeds()),
-        size=_settings_choices(dm.get_ordered_sizes()),
-        run_mode=_settings_choices(dm.get_ordered_run_modes()),
+    @app_commands.autocomplete(
+        date=record_date_autocomplete,
+        game_mode=record_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+        run_mode=record_run_mode_autocomplete,
     )
     async def record_command(self, interaction: discord.Interaction, game_mode: str, apple_amount: str, speed: str, size: str, run_mode: str, date: Optional[str] = None):
         """Get world record for specific settings"""
