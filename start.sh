@@ -49,6 +49,12 @@ fi
 echo "Starting Discord bot (update restart loop enabled)..."
 BOT_EXIT_CODE=0
 while true; do
+    # Ensure configured model exists (covers /update model changes without full container rebuild)
+    if ! ollama list 2>/dev/null | grep -q "${OLLAMA_MODEL}"; then
+        echo "Ollama model ${OLLAMA_MODEL} missing — pulling before starting bot..."
+        ollama pull "${OLLAMA_MODEL}" || echo "Warning: failed to pull ${OLLAMA_MODEL}"
+    fi
+
     python3 -u main.py
     BOT_EXIT_CODE=$?
     if [ "$BOT_EXIT_CODE" -eq "$RESTART_EXIT_CODE" ]; then

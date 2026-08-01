@@ -1,16 +1,20 @@
 import asyncio
 import os
+import re
 import subprocess
 import sys
-from typing import Optional
+from typing import Optional, Set
 
 import discord
+import requests
 from discord import app_commands
 from discord.ext import commands
 
 RESTART_EXIT_CODE = 42
 GIT_BRANCH = os.getenv("GIT_BRANCH", "main")
 APP_DIR = os.getenv("APP_DIR", "/app")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+DEFAULT_OLLAMA_MODEL = "qwen3:8b"
 
 
 def _get_owner_id() -> Optional[int]:
@@ -35,8 +39,76 @@ def _run_command(args: list[str], timeout: int) -> subprocess.CompletedProcess[s
 
 
 async def _run_command_async(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
-    # Keep the Discord event loop alive while git/pip run
     return await asyncio.to_thread(_run_command, args, timeout)
+
+
+def _desired_ollama_model() -> str:
+    """Resolve model after git sync: env wins, else default from gpt.py on disk."""
+    env_model = os.getenv("OLLAMA_MODEL")
+    if env_model:
+        return env_model.strip().strip('"').strip("'")
+
+    try:
+        with open(os.path.join(APP_DIR, "gpt.py"), encoding="utf-8") as handle:
+            text = handle.read()
+        match = re.search(
+            r'OLLAMA_MODEL\s*=\s*os\.getenv\(\s*["\']OLLAMA_MODEL["\']\s*,\s*["\']([^"\']+)["\']\s*\)',
+            text,
+        )
+        if match:
+            return match.group(1)
+    except Exception as e:
+        print(f"Could not read OLLAMA_MODEL from gpt.py: {e}")
+
+    return DEFAULT_OLLAMA_MODEL
+
+
+def _installed_ollama_models() -> Set[str]:
+    names: Set[str] = set()
+    try:
+        response = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=15)
+        response.raise_for_status()
+        for model in response.json().get("models", []):
+            name = model.get("name") or ""
+            if name:
+                names.add(name)
+                names.add(name.split(":")[0])
+                # ollama list uses tags like qwen3:8b; also accept with digest suffixes
+                if ":" in name:
+                    names.add(name.rsplit(":", 1)[0] + ":" + name.rsplit(":", 1)[1].split("-")[0])
+    except Exception as e:
+        print(f"Could not list Ollama models via API: {e}")
+    return names
+
+
+def _model_is_installed(model: str, installed: Set[str]) -> bool:
+    if model in installed:
+        return True
+    # Match qwen3:8b against qwen3:8b or qwen3:8b-... variants
+    for name in installed:
+        if name == model or name.startswith(model + "-") or name.startswith(model + ":"):
+            return True
+    return False
+
+
+async def _ensure_ollama_model(model: str, set_status) -> tuple[bool, str]:
+    """Pull the model if missing. Returns (ok, status_note)."""
+    installed = await asyncio.to_thread(_installed_ollama_models)
+    if _model_is_installed(model, installed):
+        return True, f"Ollama model `{model}` already installed"
+
+    await set_status(
+        f"Updating…\n"
+        f"- Code synced\n"
+        f"- Pulling Ollama model `{model}` (this can take several minutes)…"
+    )
+
+    pull = await _run_command_async(["ollama", "pull", model], timeout=1800)
+    if pull.returncode != 0:
+        error_output = (pull.stderr or pull.stdout or "Unknown error").strip()
+        return False, f"Ollama pull failed for `{model}`:\n```\n{error_output[:1200]}\n```"
+
+    return True, f"Ollama model `{model}` downloaded"
 
 
 class Admin(commands.Cog):
@@ -51,7 +123,7 @@ class Admin(commands.Cog):
 
     @app_commands.command(
         name="update",
-        description="Pull the latest code from GitHub and restart the bot",
+        description="Pull latest code, sync Ollama model, and restart the bot",
     )
     async def update_command(self, interaction: discord.Interaction):
         if not self._is_owner(interaction.user.id):
@@ -61,7 +133,6 @@ class Admin(commands.Cog):
             )
             return
 
-        # Immediate visible status (must happen within 3 seconds)
         await interaction.response.send_message(
             "Updating from GitHub…\n- Fetching `origin/" + GIT_BRANCH + "`",
             ephemeral=True,
@@ -129,6 +200,16 @@ class Admin(commands.Cog):
                 )
                 return
 
+            # Sync Ollama model from new code/env (no container restart needed)
+            model = _desired_ollama_model()
+            ollama_ok, ollama_note = await _ensure_ollama_model(model, set_status)
+            if not ollama_ok:
+                await set_status(
+                    f"Code and deps updated, but Ollama model sync failed "
+                    f"(bot was not restarted):\n{ollama_note}"
+                )
+                return
+
             after = await _run_command_async(["git", "rev-parse", "--short", "HEAD"], 10)
             after_hash = (after.stdout or "").strip() or "unknown"
             reset_line = (reset_result.stdout or "").strip()
@@ -137,11 +218,11 @@ class Admin(commands.Cog):
                 f"Update complete.\n"
                 f"- `{before_hash}` → `{after_hash}`\n"
                 f"- {reset_line or 'Working tree matches origin/' + GIT_BRANCH}\n"
-                f"- Dependencies installed\n\n"
+                f"- Dependencies installed\n"
+                f"- {ollama_note}\n\n"
                 f"Restarting bot now — I will be back in a few seconds."
             )
 
-            # Give Discord time to deliver the final status before we die
             await asyncio.sleep(2)
             await self.bot.close()
             sys.exit(RESTART_EXIT_CODE)
