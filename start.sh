@@ -4,6 +4,7 @@ set -e
 REPO_URL="${GIT_REPO_URL:-https://github.com/DarkSnakeGang/PuddingBot.git}"
 GIT_BRANCH="${GIT_BRANCH:-main}"
 RESTART_EXIT_CODE=42
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3:8b}"
 
 # Allow git operations when running as root inside Docker
 git config --global --add safe.directory /app
@@ -37,11 +38,11 @@ for i in {1..30}; do
     sleep 2
 done
 
-if ollama list | grep -q "llama3.2:3b"; then
-    echo "Model llama3.2:3b already exists, skipping download!"
+if ollama list | grep -q "${OLLAMA_MODEL}"; then
+    echo "Model ${OLLAMA_MODEL} already exists, skipping download!"
 else
-    echo "Downloading llama3.2:3b model..."
-    ollama pull llama3.2:3b
+    echo "Downloading ${OLLAMA_MODEL} model (this can take a while)..."
+    ollama pull "${OLLAMA_MODEL}"
     echo "Model downloaded successfully!"
 fi
 

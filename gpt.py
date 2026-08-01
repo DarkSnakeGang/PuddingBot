@@ -8,7 +8,7 @@ import requests
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_CHAT_URL = f"{OLLAMA_HOST}/api/chat"
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
 MAX_TOOL_ROUNDS = int(os.getenv("OLLAMA_TOOL_ROUNDS", "3"))
 FETCH_MAX_CHARS = 4000
 
@@ -194,11 +194,6 @@ def _search_query_from_user_text(text: str) -> str:
     return query
 
 
-_SKIP_SEARCH_RE = re.compile(
-    r"^(hi|hey|hello|yo|sup|thanks|thank you|ty|ok|okay|k|lol|lmao|gm|gn)\W*$",
-    re.IGNORECASE,
-)
-
 _ROLE_PREFIX_RE = re.compile(
     r"^\s*(?:assistant|assistent|ai|bot|puddingbot)\s*:?\s*",
     re.IGNORECASE,
@@ -227,8 +222,7 @@ def _clean_reply(text: str) -> str:
 
 def chat_with_gpt(messages: List[Dict[str, str]]) -> str:
     """
-    Chat with local Ollama. Always web-searches for most user messages, then
-    answers with tools still available for follow-up fetches.
+    Chat with local Ollama. Always web-searches every user message, then answers.
     """
     chat_messages: List[Dict[str, Any]] = [dict(m) for m in messages]
 
@@ -248,37 +242,35 @@ def chat_with_gpt(messages: List[Dict[str, str]]) -> str:
                 }
             )
 
-        # Always search for almost every message (skip only tiny greetings)
-        search_query = _search_query_from_user_text(user_text)
-        if search_query and not _SKIP_SEARCH_RE.match(search_query):
-            print(f"[DEBUG] Auto web_search: {search_query!r}")
-            search_results = web_search(search_query, max_results=5)
+        # ALWAYS web search — every message, no exceptions
+        search_query = _search_query_from_user_text(user_text) or user_text.strip() or "latest news"
+        print(f"[DEBUG] Auto web_search (always): {search_query!r}")
+        search_results = web_search(search_query, max_results=5)
+        chat_messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "Live web search results for this user message are below. "
+                    "You DO have internet access through these results. "
+                    "NEVER say you lack real-time access, cannot browse, or cannot check CNN/news. "
+                    "Answer using these results. If they are thin, still summarize what they contain "
+                    "instead of refusing.\n\n"
+                    f"{search_results}"
+                ),
+            }
+        )
+
+        top_urls = re.findall(r"https?://[^\s]+", search_results)
+        for url in top_urls[:1]:
+            if url in urls:
+                continue
+            print(f"[DEBUG] Auto web_fetch top result: {url}")
             chat_messages.append(
                 {
                     "role": "system",
-                    "content": (
-                        "Live web search results for this user message are below. "
-                        "You DO have internet access through these results. "
-                        "NEVER say you lack real-time access, cannot browse, or cannot check CNN/news. "
-                        "Answer using these results. If they are thin, still summarize what they contain "
-                        "instead of refusing.\n\n"
-                        f"{search_results}"
-                    ),
+                    "content": f"Top search result page content:\n{web_fetch(url)}",
                 }
             )
-
-            # Also fetch the top result page for richer context
-            top_urls = re.findall(r"https?://[^\s]+", search_results)
-            for url in top_urls[:1]:
-                if url in urls:
-                    continue
-                print(f"[DEBUG] Auto web_fetch top result: {url}")
-                chat_messages.append(
-                    {
-                        "role": "system",
-                        "content": f"Top search result page content:\n{web_fetch(url)}",
-                    }
-                )
 
     try:
         for _ in range(MAX_TOOL_ROUNDS):

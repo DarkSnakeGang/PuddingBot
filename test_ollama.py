@@ -24,7 +24,7 @@ def test_ollama_generation():
     """Test if Ollama can generate responses"""
     try:
         payload = {
-            "model": "llama3.2:3b",
+            "model": "qwen3:8b",
             "prompt": "Hello! Can you respond with a simple greeting?",
             "stream": False,
             "options": {
