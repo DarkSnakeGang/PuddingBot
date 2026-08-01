@@ -165,7 +165,7 @@ def clear_context():
 context = clear_context()
 conversation_history = {}  # Store conversation history per user
 
-def get_response(user_input: str, user = "Nobody") -> str:
+def get_response(user_input: str, user="Nobody", status_notify=None) -> str:
     blocked_users = ["1118731833262231714"]
     global context
     lowered = user_input.lower()
@@ -226,7 +226,7 @@ def get_response(user_input: str, user = "Nobody") -> str:
         # Create messages array with system context and full conversation history
         messages = context + conversation_history[user]
         
-        gpt_res = gpt.chat_with_gpt(messages)
+        gpt_res = gpt.chat_with_gpt(messages, status_notify=status_notify)
         print(f"[AI RESPONSE] Generated: {gpt_res}")
         
         # Add assistant response to conversation history

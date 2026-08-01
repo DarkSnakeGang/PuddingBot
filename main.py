@@ -59,10 +59,19 @@ async def send_message(message: Message, user_message: str, user="Nobody") -> No
         user_message = user_message[1]
 
     try:
-        response: str = get_response(user_message, user)
+        loop = asyncio.get_running_loop()
+        target = message.author if is_private else message.channel
+
+        def status_notify(text: str) -> None:
+            asyncio.run_coroutine_threadsafe(target.send(text), loop)
+
+        # Run sync AI / response logic off the event loop so status messages can send
+        response: str = await asyncio.to_thread(
+            get_response, user_message, user, status_notify
+        )
         if response:
             print("[PuddingBot]: " + response)
-            await message.author.send(response) if is_private else await message.channel.send(response)
+            await target.send(response)
     except Exception as e:
         print(e)
 
