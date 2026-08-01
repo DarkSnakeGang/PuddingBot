@@ -1,3 +1,4 @@
+import asyncio
 import os
 import subprocess
 import sys
@@ -33,6 +34,11 @@ def _run_command(args: list[str], timeout: int) -> subprocess.CompletedProcess[s
     )
 
 
+async def _run_command_async(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    # Keep the Discord event loop alive while git/pip run
+    return await asyncio.to_thread(_run_command, args, timeout)
+
+
 class Admin(commands.Cog):
     """Owner-only administration commands."""
 
@@ -55,71 +61,95 @@ class Admin(commands.Cog):
             )
             return
 
-        await interaction.response.defer(ephemeral=True)
+        # Immediate visible status (must happen within 3 seconds)
+        await interaction.response.send_message(
+            "Updating from GitHub…\n- Fetching `origin/" + GIT_BRANCH + "`",
+            ephemeral=True,
+        )
+
+        async def set_status(text: str) -> None:
+            try:
+                await interaction.edit_original_response(content=text)
+            except Exception as e:
+                print(f"Could not edit update status: {e}")
 
         try:
-            # Hard sync to origin — avoids "untracked files would be overwritten" from Docker COPY leftovers
-            fetch_result = _run_command(
+            before = await _run_command_async(["git", "rev-parse", "--short", "HEAD"], 10)
+            before_hash = (before.stdout or "").strip() or "unknown"
+
+            fetch_result = await _run_command_async(
                 ["git", "fetch", "origin", GIT_BRANCH],
                 timeout=120,
             )
             if fetch_result.returncode != 0:
                 error_output = (fetch_result.stderr or fetch_result.stdout or "Unknown error").strip()
-                await interaction.followup.send(
-                    f"Git fetch failed:\n```\n{error_output[:1500]}\n```"
-                )
+                await set_status(f"Update failed during fetch:\n```\n{error_output[:1500]}\n```")
                 return
 
-            reset_result = _run_command(
+            await set_status(
+                f"Updating from GitHub…\n"
+                f"- Fetched `origin/{GIT_BRANCH}`\n"
+                f"- Resetting working tree (was `{before_hash}`)"
+            )
+
+            reset_result = await _run_command_async(
                 ["git", "reset", "--hard", f"origin/{GIT_BRANCH}"],
                 timeout=60,
             )
             if reset_result.returncode != 0:
                 error_output = (reset_result.stderr or reset_result.stdout or "Unknown error").strip()
-                await interaction.followup.send(
-                    f"Git reset failed:\n```\n{error_output[:1500]}\n```"
-                )
+                await set_status(f"Update failed during reset:\n```\n{error_output[:1500]}\n```")
                 return
 
-            # Remove leftover untracked files from image COPY, but keep secrets
-            clean_result = _run_command(
+            clean_result = await _run_command_async(
                 ["git", "clean", "-fd", "-e", ".env", "-e", ".env.*"],
                 timeout=60,
             )
             if clean_result.returncode != 0:
                 error_output = (clean_result.stderr or clean_result.stdout or "Unknown error").strip()
-                await interaction.followup.send(
-                    f"Git clean failed:\n```\n{error_output[:1500]}\n```"
-                )
+                await set_status(f"Update failed during clean:\n```\n{error_output[:1500]}\n```")
                 return
 
-            pip_result = _run_command(
+            await set_status(
+                f"Updating from GitHub…\n"
+                f"- Code synced to `origin/{GIT_BRANCH}`\n"
+                f"- Installing dependencies"
+            )
+
+            pip_result = await _run_command_async(
                 ["pip3", "install", "-r", "requirements.txt"],
                 timeout=300,
             )
             if pip_result.returncode != 0:
                 error_output = (pip_result.stderr or pip_result.stdout or "Unknown error").strip()
-                await interaction.followup.send(
-                    "Git update succeeded, but dependency install failed:\n"
+                await set_status(
+                    "Code synced, but dependency install failed "
+                    "(bot was not restarted):\n"
                     f"```\n{error_output[:1500]}\n```"
                 )
                 return
 
-            commit_result = _run_command(["git", "rev-parse", "--short", "HEAD"], timeout=10)
-            commit_hash = commit_result.stdout.strip() or "unknown"
-            reset_output = (reset_result.stdout or "").strip() or f"Reset to origin/{GIT_BRANCH}"
+            after = await _run_command_async(["git", "rev-parse", "--short", "HEAD"], 10)
+            after_hash = (after.stdout or "").strip() or "unknown"
+            reset_line = (reset_result.stdout or "").strip()
 
-            await interaction.followup.send(
-                f"Updated to `{commit_hash}`.\n```\n{reset_output}\n```\nRestarting bot..."
+            await set_status(
+                f"Update complete.\n"
+                f"- `{before_hash}` → `{after_hash}`\n"
+                f"- {reset_line or 'Working tree matches origin/' + GIT_BRANCH}\n"
+                f"- Dependencies installed\n\n"
+                f"Restarting bot now — I will be back in a few seconds."
             )
 
+            # Give Discord time to deliver the final status before we die
+            await asyncio.sleep(2)
             await self.bot.close()
             sys.exit(RESTART_EXIT_CODE)
 
         except subprocess.TimeoutExpired:
-            await interaction.followup.send("Update timed out. Check container logs.")
+            await set_status("Update timed out. Check container logs — bot was not restarted.")
         except Exception as error:
-            await interaction.followup.send(f"Update failed: {error}")
+            await set_status(f"Update failed: {error}\nBot was not restarted.")
 
 
 async def setup(bot: commands.Bot):
