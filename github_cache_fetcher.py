@@ -10,7 +10,10 @@ class GitHubCacheFetcher:
         self.base_url = 'https://raw.githubusercontent.com/DarkSnakeGang/FastSnakeStats/refs/heads/main'
         self.cache_dir = 'daily'
         self.metadata_url = f"{self.base_url}/time-travel-cache/metadata/available-dates.json"
+        self.player_stats_url = f"{self.base_url}/time-travel-cache/metadata/player-stats.json"
         self.fallback_to_api = True
+        self._player_stats_cache: Optional[Dict] = None
+        self._player_stats_cache_fetched_at: Optional[datetime] = None
     
     async def get_most_recent_date(self) -> Optional[str]:
         """Get the most recent available date from GitHub"""
@@ -160,6 +163,51 @@ class GitHubCacheFetcher:
         except Exception as error:
             print(f'Error fetching cache stats: {error}')
             return None
+
+    async def fetch_player_stats_metadata(self, force_refresh: bool = False) -> Optional[Dict]:
+        """Fetch player peak-stats metadata (cached in memory for 1 hour)."""
+        try:
+            if (
+                not force_refresh
+                and self._player_stats_cache is not None
+                and self._player_stats_cache_fetched_at is not None
+                and (datetime.utcnow() - self._player_stats_cache_fetched_at).total_seconds() < 3600
+            ):
+                return self._player_stats_cache
+
+            response = requests.get(self.player_stats_url, timeout=20)
+            if not response.ok:
+                print('Player stats metadata not available')
+                return self._player_stats_cache
+
+            metadata = response.json()
+            self._player_stats_cache = metadata
+            self._player_stats_cache_fetched_at = datetime.utcnow()
+            return metadata
+        except Exception as error:
+            print(f'Error fetching player stats metadata: {error}')
+            return self._player_stats_cache
+
+    async def get_player_peak_stats(self, player_name: str) -> Optional[Dict]:
+        """Look up peak records / peak percentage for a player (case-insensitive)."""
+        metadata = await self.fetch_player_stats_metadata()
+        if not metadata or not metadata.get('players'):
+            return None
+
+        needle = player_name.lower().strip()
+        for player in metadata['players']:
+            name = player.get('name') or ''
+            if name.lower() == needle:
+                return {
+                    'id': player.get('id'),
+                    'name': name,
+                    'totalRecords': player.get('totalRecords'),
+                    'totalDates': player.get('totalDates'),
+                    'peakRecords': player.get('peakRecords'),
+                    'peakPercentage': player.get('peakPercentage'),
+                    'lastUpdated': metadata.get('lastUpdated'),
+                }
+        return None
 
 # Create global instance
 github_cache_fetcher = GitHubCacheFetcher()

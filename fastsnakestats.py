@@ -95,17 +95,28 @@ class FastSnakeStats(commands.Cog):
                                 'rank': 1
                             })
             
+            peak_stats = await github_cache_fetcher.get_player_peak_stats(player_name)
+
             if not player_records:
-                return None
-            
+                if not peak_stats:
+                    return None
+                return {
+                    'player_name': peak_stats.get('name') or player_name,
+                    'world_records_held': 0,
+                    'recent_activity': [],
+                    'date': date or await github_cache_fetcher.get_most_recent_date(),
+                    'peak_stats': peak_stats,
+                }
+
             # Sort by date (most recent first)
             player_records.sort(key=lambda x: dm.get_run_date(x['run']), reverse=True)
             
             return {
-                'player_name': player_name,
+                'player_name': (peak_stats or {}).get('name') or player_name,
                 'world_records_held': total_runs,  # Now matches /stats calculation
                 'recent_activity': player_records,  # All runs, not just 10
-                'date': date or await github_cache_fetcher.get_most_recent_date()
+                'date': date or await github_cache_fetcher.get_most_recent_date(),
+                'peak_stats': peak_stats,
             }
             
         except Exception as e:
@@ -442,6 +453,24 @@ class FastSnakeStats(commands.Cog):
         
         return embed
     
+    def _format_player_peak_stats(self, peak_stats: Optional[Dict]) -> str:
+        if not peak_stats:
+            return "No historical peak data available."
+
+        lines = []
+        peak_records = peak_stats.get('peakRecords') or {}
+        peak_pct = peak_stats.get('peakPercentage') or {}
+
+        if peak_records.get('count') is not None and peak_records.get('date'):
+            lines.append(
+                f"**Peak Records:** {peak_records['count']} on {peak_records['date']}"
+            )
+        if peak_pct.get('percentage') is not None and peak_pct.get('date'):
+            lines.append(
+                f"**Peak Percentage:** {peak_pct['percentage']:.2f}% on {peak_pct['date']}"
+            )
+        return "\n".join(lines) if lines else "No historical peak data available."
+
     def create_player_embed(self, player_data: Dict, page: int = 0) -> discord.Embed:
         """Create a rich embed for player display with pagination"""
         embed = discord.Embed(
@@ -454,6 +483,12 @@ class FastSnakeStats(commands.Cog):
         embed.add_field(
             name="📊 Statistics",
             value=f"**World Records:** {player_data['world_records_held']}",
+            inline=False
+        )
+
+        embed.add_field(
+            name="📈 Historical Peaks",
+            value=self._format_player_peak_stats(player_data.get('peak_stats')),
             inline=False
         )
         
@@ -510,9 +545,16 @@ class FastSnakeStats(commands.Cog):
                 value=recent_text,
                 inline=False
             )
+        else:
+            embed.add_field(
+                name="🕒 Recent Activity",
+                value="No current world records held.",
+                inline=False
+            )
         
         # Add footer with page info
-        total_pages = (len(player_data['recent_activity']) + 4) // 5  # 5 runs per page
+        activity_len = len(player_data.get('recent_activity') or [])
+        total_pages = max(1, (activity_len + 4) // 5)  # 5 runs per page
         embed.set_footer(text=f"Data from FastSnakeStats • {player_data['date']} • Page {page + 1}/{total_pages}")
         
         return embed
@@ -1050,7 +1092,8 @@ class PlayerPaginationView(discord.ui.View):
         self.user_id = user_id
         self.current_page = 0
         self.runs_per_page = 5
-        self.total_pages = (len(player_data['recent_activity']) + self.runs_per_page - 1) // self.runs_per_page
+        activity_len = len(player_data.get('recent_activity') or [])
+        self.total_pages = max(1, (activity_len + self.runs_per_page - 1) // self.runs_per_page)
     
     @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
     async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1095,6 +1138,31 @@ class PlayerPaginationView(discord.ui.View):
             value=f"**World Records:** {player_data['world_records_held']}",
             inline=False
         )
+
+        peak_stats = player_data.get('peak_stats')
+        if peak_stats:
+            lines = []
+            peak_records = peak_stats.get('peakRecords') or {}
+            peak_pct = peak_stats.get('peakPercentage') or {}
+            if peak_records.get('count') is not None and peak_records.get('date'):
+                lines.append(
+                    f"**Peak Records:** {peak_records['count']} on {peak_records['date']}"
+                )
+            if peak_pct.get('percentage') is not None and peak_pct.get('date'):
+                lines.append(
+                    f"**Peak Percentage:** {peak_pct['percentage']:.2f}% on {peak_pct['date']}"
+                )
+            embed.add_field(
+                name="📈 Historical Peaks",
+                value="\n".join(lines) if lines else "No historical peak data available.",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="📈 Historical Peaks",
+                value="No historical peak data available.",
+                inline=False
+            )
         
         # Add recent activity with pagination
         if player_data['recent_activity']:
@@ -1146,6 +1214,12 @@ class PlayerPaginationView(discord.ui.View):
             embed.add_field(
                 name="🕒 Recent Activity",
                 value=recent_text,
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="🕒 Recent Activity",
+                value="No current world records held.",
                 inline=False
             )
         
