@@ -4,6 +4,7 @@ from discord.ext import commands
 from typing import Optional, Dict, List
 import asyncio
 import os
+import random
 from datetime import datetime
 
 from github_cache_fetcher import github_cache_fetcher
@@ -1716,6 +1717,13 @@ class FastSnakeStats(commands.Cog):
                 gif_path = os.path.join(os.path.dirname(__file__), "assets", "unheld_free.gif")
                 await interaction.followup.send(
                     file=discord.File(gif_path, filename="unheld_free.gif")
+                )
+                return
+
+            if tier_value == "Inhuman" and random.randint(1, 25) == 1:
+                gif_path = os.path.join(os.path.dirname(__file__), "assets", "unheld_inhuman.gif")
+                await interaction.followup.send(
+                    file=discord.File(gif_path, filename="unheld_inhuman.gif")
                 )
                 return
 
