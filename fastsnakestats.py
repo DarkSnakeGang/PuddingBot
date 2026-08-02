@@ -299,6 +299,82 @@ class FastSnakeStats(commands.Cog):
         label = f"{month_name[first_prev.month]} {first_prev.year}"
         return first_prev.isoformat(), last_prev.isoformat(), label
 
+    def _year_month_bounds(self, year_month: str) -> Optional[Tuple[str, str, str]]:
+        """Return (start_iso, end_iso, label) for a YYYY-MM string."""
+        try:
+            year_s, month_s = year_month.split("-", 1)
+            year, month = int(year_s), int(month_s)
+            if month < 1 or month > 12:
+                return None
+            first = date(year, month, 1)
+            last = date(year, month, monthrange(year, month)[1])
+            label = f"{month_name[month]} {year}"
+            return first.isoformat(), last.isoformat(), label
+        except (TypeError, ValueError):
+            return None
+
+    async def get_complete_year_months(self) -> List[str]:
+        """YYYY-MM months with full FastSnakeStats daily coverage (live check)."""
+        return await github_cache_fetcher.get_complete_year_months()
+
+    async def resolve_monthly_year_month(self, year_month: Optional[str] = None) -> Optional[str]:
+        """Pick a report month using live FastSnakeStats completeness.
+
+        - If year_month is given, accept it only when that month is fully cached.
+        - Otherwise prefer the previous calendar month when complete, else the
+          latest complete month FastSnakeStats has (back to the start of data).
+        """
+        complete = await github_cache_fetcher.get_complete_year_months()
+        if not complete:
+            return None
+        if year_month:
+            return year_month if year_month in complete else None
+        previous = self._previous_calendar_month_bounds()[0][:7]
+        if previous in complete:
+            return previous
+        return complete[0]
+
+    def _longevity_snapshot_from_progression(
+        self, progression: Dict, as_of: str, limit: int = 10
+    ) -> Tuple[List[Dict], int]:
+        """Top longevity holds and year-old+ standing count as of a date, from progression."""
+        holds: List[Dict] = []
+        for category, flips in progression.items():
+            if not flips:
+                continue
+            for i, flip in enumerate(flips):
+                start = flip.get("d")
+                if not start or start > as_of:
+                    continue
+                next_flip = flips[i + 1] if i + 1 < len(flips) else None
+                next_date = next_flip.get("d") if next_flip else None
+                if next_date and next_date <= as_of:
+                    effective_end = next_date
+                    still_standing = False
+                else:
+                    effective_end = as_of
+                    still_standing = True
+                days = self._hold_day_count(start, effective_end)
+                holds.append({
+                    "category": category,
+                    "playerName": flip.get("n") or "Unknown",
+                    "playerId": flip.get("i"),
+                    "time": flip.get("t") or "",
+                    "weblink": flip.get("w"),
+                    "start": start,
+                    "end": effective_end,
+                    "days": days,
+                    "stillStanding": still_standing,
+                })
+
+        holds.sort(key=lambda item: (-item["days"], item["start"]))
+        standing = [item for item in holds if item["stillStanding"]]
+        # Match the usual "oldest list" size (~top 50 standing)
+        remaining_old = sum(
+            1 for item in standing[:50] if item["days"] >= MIN_OLDEST_HOLD_DAYS
+        )
+        return holds[:limit], remaining_old
+
     def _format_hold_duration(self, start: str, end: str) -> str:
         """Human duration like '5 years, 4 months and 23 days'."""
         try:
@@ -338,16 +414,27 @@ class FastSnakeStats(commands.Cog):
         except ValueError:
             return 0
 
-    async def get_monthly_oldest_report_data(self) -> Optional[Dict]:
+    async def get_monthly_oldest_report_data(
+        self, year_month: Optional[str] = None
+    ) -> Optional[Dict]:
         """Build the monthly oldest-records report purely from FastSnakeStats.
 
-        Uses only statistics-explorer.json (progression + longevity) from the
-        FastSnakeStats GitHub cache — no Discord message history or manual lists.
+        Uses only statistics-explorer.json (progression) from the FastSnakeStats
+        GitHub cache — no Discord message history or manual lists.
         Computed on the fly each time /monthly or the scheduled post runs.
+
+        year_month: optional YYYY-MM; default is the latest fully complete month
+        (preferring the previous calendar month when FastSnakeStats has it).
         """
         try:
-            period_start, period_end, period_label = self._previous_calendar_month_bounds()
-            # Always pull fresh explorer data so the report is self-contained
+            resolved = await self.resolve_monthly_year_month(year_month)
+            if not resolved:
+                return None
+            bounds = self._year_month_bounds(resolved)
+            if not bounds:
+                return None
+            period_start, period_end, period_label = bounds
+
             explorer = await github_cache_fetcher.fetch_statistics_explorer(force_refresh=True)
             if not explorer:
                 return None
@@ -385,23 +472,20 @@ class FastSnakeStats(commands.Cog):
             total_beaten = len(beaten)
             beaten = beaten[:MONTHLY_BEATEN_LIMIT]
 
-            longevity = explorer.get("longevity") or {}
-            standing = longevity.get("standing") or []
-            all_time = longevity.get("all") or []
-            remaining_old = sum(
-                1 for item in standing if int(item.get("days") or 0) >= MIN_OLDEST_HOLD_DAYS
+            oldest_top, remaining_old = self._longevity_snapshot_from_progression(
+                progression, period_end, limit=10
             )
 
             return {
                 "period_start": period_start,
                 "period_end": period_end,
                 "period_label": period_label,
+                "year_month": resolved,
                 "min_days": MIN_OLDEST_HOLD_DAYS,
                 "beaten": beaten,
                 "total_beaten": total_beaten,
                 "remaining_old": remaining_old,
-                "oldest_top": all_time[:10],
-                "standing_count": len(standing),
+                "oldest_top": oldest_top,
             }
         except Exception as e:
             print(f"Error getting monthly oldest report data: {e}")
@@ -472,12 +556,12 @@ class FastSnakeStats(commands.Cog):
         return embed
 
     def create_monthly_oldest_embed(self, report_data: Dict) -> discord.Embed:
-        """Embed for the current top 10 longest holds (standing + historical)."""
+        """Embed for the top 10 longest holds as of the report month end."""
         embed = discord.Embed(
-            title="⏳ Top 10 Oldest Holds",
+            title=f"⏳ Top 10 Oldest Holds — as of {report_data['period_end']}",
             description=(
-                "Longest holds of all time. "
-                "● still a WR · ○ no longer a WR (but still a top historical hold)."
+                "Longest holds as of that month’s end. "
+                "● still a WR then · ○ no longer a WR by then."
             ),
             color=0x9b59b6,
             timestamp=datetime.now(),
@@ -1084,6 +1168,24 @@ class FastSnakeStats(commands.Cog):
         if current:
             years = [year for year in years if current in year]
         return [app_commands.Choice(name=year, value=year) for year in years[:25]]
+
+    async def monthly_month_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        """Autocomplete from live FastSnakeStats complete-month scan (no hardcoding)."""
+        months = await github_cache_fetcher.get_complete_year_months()
+        needle = (current or "").strip().lower()
+        choices: List[app_commands.Choice[str]] = []
+        for ym in months:
+            bounds = self._year_month_bounds(ym)
+            label = bounds[2] if bounds else ym
+            hay = f"{ym} {label}".lower()
+            if needle and needle not in hay:
+                continue
+            choices.append(app_commands.Choice(name=f"{label} ({ym})", value=ym))
+            if len(choices) >= 25:
+                break
+        return choices
 
     def create_progression_embed(self, settings_key: str, flips: List[Dict], page: int = 0) -> discord.Embed:
         items_per_page = 8
@@ -1704,11 +1806,28 @@ class FastSnakeStats(commands.Cog):
         name="monthly",
         description="Monthly oldest-records update (beaten longstanding WRs + current oldest)",
     )
-    async def monthly_command(self, interaction: discord.Interaction):
+    @app_commands.describe(
+        month="Optional year-month (YYYY-MM). Autocomplete lists months with complete FastSnakeStats data.",
+    )
+    @app_commands.autocomplete(month=monthly_month_autocomplete)
+    async def monthly_command(
+        self,
+        interaction: discord.Interaction,
+        month: Optional[str] = None,
+    ):
         """Test / preview the monthly oldest-records report."""
         await interaction.response.defer()
         try:
-            report_data = await self.get_monthly_oldest_report_data()
+            if month:
+                month = month.strip()
+                if not await github_cache_fetcher.is_year_month_complete(month):
+                    await interaction.followup.send(
+                        f"❌ `{month}` does not have complete FastSnakeStats daily data yet. "
+                        "Pick a month from the autocomplete list (computed live from the cache)."
+                    )
+                    return
+
+            report_data = await self.get_monthly_oldest_report_data(year_month=month)
             if not report_data:
                 await interaction.followup.send(
                     "❌ Unable to fetch monthly oldest-records data. Please try again later."

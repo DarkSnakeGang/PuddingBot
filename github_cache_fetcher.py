@@ -140,6 +140,49 @@ class GitHubCacheFetcher:
         except Exception as error:
             print(f'Error fetching available dates: {error}')
             return []
+
+    async def get_complete_year_months(self) -> List[str]:
+        """Return YYYY-MM months with a full calendar of daily cache files.
+
+        Computed on the fly from available-dates.json — no hardcoded month list.
+        A month is complete only when every day 1..N is present (so the current
+        partial month and any gap months are excluded automatically).
+        """
+        from calendar import monthrange
+
+        dates = await self.get_available_dates()
+        if not dates:
+            return []
+
+        days_by_month: Dict[str, set] = {}
+        for day in dates:
+            if len(day) < 10:
+                continue
+            ym = day[:7]
+            try:
+                days_by_month.setdefault(ym, set()).add(int(day[8:10]))
+            except ValueError:
+                continue
+
+        complete: List[str] = []
+        for ym, days in days_by_month.items():
+            try:
+                year, month = map(int, ym.split('-'))
+                expected = monthrange(year, month)[1]
+            except ValueError:
+                continue
+            if set(range(1, expected + 1)).issubset(days):
+                complete.append(ym)
+
+        complete.sort(reverse=True)
+        return complete
+
+    async def is_year_month_complete(self, year_month: str) -> bool:
+        """True if FastSnakeStats currently has every day of YYYY-MM."""
+        if not year_month:
+            return False
+        complete = await self.get_complete_year_months()
+        return year_month in complete
     
     async def is_github_cache_available(self) -> bool:
         """Check if GitHub cache is accessible"""
