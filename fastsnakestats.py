@@ -407,12 +407,9 @@ class FastSnakeStats(commands.Cog):
             print(f"Error getting monthly oldest report data: {e}")
             return None
 
-    def create_monthly_beaten_embed(self, report_data: Dict, page: int = 0) -> discord.Embed:
-        """Embed listing longstanding records beaten in the period."""
+    def create_monthly_beaten_embed(self, report_data: Dict) -> discord.Embed:
+        """Embed listing longstanding records beaten in the period (no pagination)."""
         beaten = report_data["beaten"]
-        items_per_page = 3
-        total_pages = max(1, (len(beaten) + items_per_page - 1) // items_per_page)
-        page = max(0, min(page, total_pages - 1))
         min_days = report_data.get("min_days", MIN_OLDEST_HOLD_DAYS)
         total_beaten = report_data.get("total_beaten", len(beaten))
 
@@ -447,10 +444,8 @@ class FastSnakeStats(commands.Cog):
                 inline=False,
             )
         else:
-            start_idx = page * items_per_page
-            page_items = beaten[start_idx:start_idx + items_per_page]
             lines = []
-            for i, item in enumerate(page_items, start_idx + 1):
+            for i, item in enumerate(beaten, 1):
                 run_mode = item["category"].split("|")[4] if "|" in item["category"] else ""
                 old_time = self._format_explorer_time(item.get("old_time", ""), run_mode)
                 new_time = self._format_explorer_time(item.get("new_time", ""), run_mode)
@@ -464,15 +459,16 @@ class FastSnakeStats(commands.Cog):
                     f"after **{item['duration']}**\n"
                     f"{old_time} → {new_time} · beaten `{item['end']}`"
                 )
-            embed.add_field(
-                name="🏆 Beaten Holds",
-                value="\n\n".join(lines),
-                inline=False,
-            )
+            # Split across fields to stay under Discord's 1024-char field limit
+            chunk_size = 3
+            for chunk_start in range(0, len(lines), chunk_size):
+                chunk = lines[chunk_start:chunk_start + chunk_size]
+                start_n = chunk_start + 1
+                end_n = chunk_start + len(chunk)
+                name = "🏆 Beaten Holds" if chunk_start == 0 else f"🏆 Beaten Holds ({start_n}–{end_n})"
+                embed.add_field(name=name, value="\n\n".join(chunk), inline=False)
 
-        embed.set_footer(
-            text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}"
-        )
+        embed.set_footer(text="Data from FastSnakeStats • Monthly oldest update")
         return embed
 
     def create_monthly_oldest_embed(self, report_data: Dict) -> discord.Embed:
@@ -524,9 +520,9 @@ class FastSnakeStats(commands.Cog):
         embed.set_footer(text="Data from FastSnakeStats • Monthly oldest update")
         return embed
 
-    def build_monthly_report_embeds(self, report_data: Dict, beaten_page: int = 0) -> List[discord.Embed]:
+    def build_monthly_report_embeds(self, report_data: Dict) -> List[discord.Embed]:
         return [
-            self.create_monthly_beaten_embed(report_data, page=beaten_page),
+            self.create_monthly_beaten_embed(report_data),
             self.create_monthly_oldest_embed(report_data),
         ]
 
@@ -537,18 +533,7 @@ class FastSnakeStats(commands.Cog):
             await channel.send("❌ Unable to build the monthly oldest-records report.")
             return False
 
-        embeds = self.build_monthly_report_embeds(report_data, beaten_page=0)
-        items_per_page = 3
-        beaten_count = len(report_data["beaten"])
-        total_pages = max(1, (beaten_count + items_per_page - 1) // items_per_page)
-
-        if total_pages <= 1:
-            await channel.send(embeds=embeds)
-        else:
-            # Scheduled posts: dump every beaten page as separate messages
-            await channel.send(embeds=embeds)
-            for page in range(1, total_pages):
-                await channel.send(embed=self.create_monthly_beaten_embed(report_data, page=page))
+        await channel.send(embeds=self.build_monthly_report_embeds(report_data))
         return True
 
     @tasks.loop(time=time(hour=12, minute=0, tzinfo=MONTHLY_REPORT_TZ))
@@ -1730,14 +1715,8 @@ class FastSnakeStats(commands.Cog):
                 )
                 return
 
-            embeds = self.build_monthly_report_embeds(report_data, beaten_page=0)
-            beaten_count = len(report_data["beaten"])
-            total_pages = max(1, (beaten_count + 2) // 3)
-            if total_pages > 1:
-                view = MonthlyReportPaginationView(self, report_data, interaction.user.id)
-                await interaction.followup.send(embeds=embeds, view=view)
-            else:
-                await interaction.followup.send(embeds=embeds)
+            embeds = self.build_monthly_report_embeds(report_data)
+            await interaction.followup.send(embeds=embeds)
         except Exception as e:
             print(f"Error in monthly command: {e}")
             await interaction.followup.send(
@@ -2178,43 +2157,6 @@ class FastSnakeStats(commands.Cog):
         except Exception as e:
             print(f"Error in leaderboards command: {e}")
             await interaction.followup.send("❌ An error occurred while fetching leaderboards.")
-
-class MonthlyReportPaginationView(discord.ui.View):
-    """Paginate the beaten-holds embed while keeping the top-10 embed."""
-
-    def __init__(self, cog: "FastSnakeStats", report_data: Dict, user_id: int):
-        super().__init__(timeout=300)
-        self.cog = cog
-        self.report_data = report_data
-        self.user_id = user_id
-        self.current_page = 0
-        self.items_per_page = 3
-        beaten_count = len(report_data.get("beaten") or [])
-        self.total_pages = max(1, (beaten_count + self.items_per_page - 1) // self.items_per_page)
-        self.next_button.disabled = self.total_pages <= 1
-
-    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
-    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
-            return
-        self.current_page = max(0, self.current_page - 1)
-        await self.update_view(interaction)
-
-    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
-            return
-        self.current_page = min(self.total_pages - 1, self.current_page + 1)
-        await self.update_view(interaction)
-
-    async def update_view(self, interaction: discord.Interaction):
-        self.previous_button.disabled = self.current_page == 0
-        self.next_button.disabled = self.current_page >= self.total_pages - 1
-        embeds = self.cog.build_monthly_report_embeds(self.report_data, beaten_page=self.current_page)
-        await interaction.response.edit_message(embeds=embeds, view=self)
-
 
 class ListPaginationView(discord.ui.View):
     """Generic Prev/Next pagination for explorer list embeds."""
