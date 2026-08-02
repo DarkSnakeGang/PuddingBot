@@ -8,11 +8,13 @@ import requests
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_CHAT_URL = f"{OLLAMA_HOST}/api/chat"
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:0.6b")
 MAX_TOOL_ROUNDS = int(os.getenv("OLLAMA_TOOL_ROUNDS", "3"))
 FETCH_MAX_CHARS = 4000
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "30"))
 OLLAMA_RETRY_TIMEOUT = int(os.getenv("OLLAMA_RETRY_TIMEOUT", "120"))
+# Qwen3 thinking burns tokens/latency; keep it off for snappy Discord replies
+OLLAMA_THINK = os.getenv("OLLAMA_THINK", "false").lower() in ("1", "true", "yes")
 
 TOOLS = [
     {
@@ -172,10 +174,11 @@ def _ollama_chat(
         "model": OLLAMA_MODEL,
         "messages": messages,
         "stream": False,
+        "think": OLLAMA_THINK,
         "options": {
             "temperature": 0.7,
             "top_p": 0.9,
-            "num_predict": 1024,
+            "num_predict": 512,
         },
     }
     if use_tools:

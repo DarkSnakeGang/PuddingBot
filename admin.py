@@ -14,7 +14,7 @@ RESTART_EXIT_CODE = 42
 GIT_BRANCH = os.getenv("GIT_BRANCH", "main")
 APP_DIR = os.getenv("APP_DIR", "/app")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-DEFAULT_OLLAMA_MODEL = "qwen3:8b"
+DEFAULT_OLLAMA_MODEL = "qwen3:0.6b"
 
 
 def _get_owner_id() -> Optional[int]:

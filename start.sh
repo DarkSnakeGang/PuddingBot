@@ -4,7 +4,7 @@ set -e
 REPO_URL="${GIT_REPO_URL:-https://github.com/DarkSnakeGang/PuddingBot.git}"
 GIT_BRANCH="${GIT_BRANCH:-main}"
 RESTART_EXIT_CODE=42
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3:8b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3:0.6b}"
 
 # Allow git operations when running as root inside Docker
 git config --global --add safe.directory /app

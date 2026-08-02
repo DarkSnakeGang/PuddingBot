@@ -8,7 +8,7 @@ ENV OLLAMA_DEBUG=0
 ENV GIT_REPO_URL=https://github.com/DarkSnakeGang/PuddingBot.git
 ENV GIT_BRANCH=main
 ENV APP_DIR=/app
-ENV OLLAMA_MODEL=qwen3:8b
+ENV OLLAMA_MODEL=qwen3:0.6b
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \

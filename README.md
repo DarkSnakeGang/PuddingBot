@@ -48,12 +48,12 @@ The Docker container includes:
 - **Ubuntu 22.04** base image
 - **Ollama** for local AI processing
 - **Python 3** with all required dependencies
-- **llama3.2:3b** model (automatically downloaded during build)
+- **qwen3:0.6b** model (automatically downloaded on start; override with `OLLAMA_MODEL`)
 
 ## AI Integration
 
 The bot now uses Ollama for AI responses instead of external APIs:
-- **Model**: llama3.2:3b (good balance of performance and resource usage)
+- **Model**: qwen3:0.6b (fastest current tools-capable Qwen3; thinking disabled for latency)
 - **Local Processing**: All AI responses are generated locally
 - **No External Dependencies**: No need for OpenAI API keys or external services
 
@@ -79,7 +79,7 @@ The bot now uses Ollama for AI responses instead of external APIs:
 1. **Ollama not starting**: Check Docker logs for Ollama startup issues
 2. **Model not found**: The build process should automatically download the model
 3. **Discord connection issues**: Verify your Discord token is correct
-4. **Memory issues**: The llama3.2:3b model requires ~2GB RAM
+4. **Memory issues**: The qwen3:0.6b model needs roughly ~1GB RAM
 
 ## Development
 

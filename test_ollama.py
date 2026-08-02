@@ -24,12 +24,13 @@ def test_ollama_generation():
     """Test if Ollama can generate responses"""
     try:
         payload = {
-            "model": "qwen3:8b",
+            "model": "qwen3:0.6b",
             "prompt": "Hello! Can you respond with a simple greeting?",
             "stream": False,
+            "think": False,
             "options": {
                 "temperature": 0.7,
-                "max_tokens": 100
+                "num_predict": 100
             }
         }
         
