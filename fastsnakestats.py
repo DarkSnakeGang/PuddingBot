@@ -722,7 +722,281 @@ class FastSnakeStats(commands.Cog):
                 return time_str
         else:
             return time_str
-    
+
+    def _format_explorer_time(self, iso_time: str, run_mode: str) -> str:
+        """Format ISO duration from explorer JSON, with High Score apple display."""
+        return self._format_time_for_display(dm.parse_time(iso_time), run_mode)
+
+    def _format_category_line(self, settings_key: str) -> str:
+        return dm.format_category_key(settings_key)
+
+    async def get_leaderboards_data(
+        self, apple_amount: str, speed: str, size: str, date: Optional[str] = None
+    ) -> Optional[Dict]:
+        """Build full WR table for fixed apple/speed/size across all modes."""
+        try:
+            if apple_amount not in dm.APPLE_AMOUNTS or speed not in dm.SPEEDS or size not in dm.SIZES:
+                return None
+            if date and not await github_cache_fetcher.is_date_available(date):
+                return None
+
+            if date:
+                world_records = await github_cache_fetcher.fetch_world_records_for_date(date)
+            else:
+                world_records = await github_cache_fetcher.fetch_current_world_records()
+
+            if not world_records:
+                return None
+
+            prefix = f"{apple_amount}|{speed}|{size}|"
+            mode_order = {name: i for i, name in enumerate(dm.get_ordered_gamemodes())}
+            run_order = {name: i for i, name in enumerate(dm.get_ordered_run_modes())}
+            rows = []
+
+            for settings_key, runs in world_records.items():
+                if not settings_key.startswith(prefix) or not runs:
+                    continue
+                parts = settings_key.split('|')
+                if len(parts) != 5:
+                    continue
+                gamemode, run_mode = parts[3], parts[4]
+                best = runs[0]
+                time_str = dm.get_run_time(best)
+                rows.append({
+                    'settings': settings_key,
+                    'gamemode': gamemode,
+                    'run_mode': run_mode,
+                    'player': dm.get_player_name(best),
+                    'time': self._format_time_for_display(time_str, run_mode),
+                    'date': dm.get_run_date(best),
+                    'link': dm.get_run_link(best),
+                })
+
+            rows.sort(
+                key=lambda r: (
+                    mode_order.get(r['gamemode'], 999),
+                    run_order.get(r['run_mode'], 999),
+                )
+            )
+
+            return {
+                'apple_amount': apple_amount,
+                'speed': speed,
+                'size': size,
+                'rows': rows,
+                'date': date or await github_cache_fetcher.get_most_recent_date(),
+            }
+        except Exception as e:
+            print(f"Error getting leaderboards data: {e}")
+            return None
+
+    async def activity_year_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        heatmap = await github_cache_fetcher.get_activity_heatmap()
+        years = sorted({entry.get('date', '')[:4] for entry in (heatmap or []) if entry.get('date')}, reverse=True)
+        if current:
+            years = [year for year in years if current in year]
+        return [app_commands.Choice(name=year, value=year) for year in years[:25]]
+
+    def create_progression_embed(self, settings_key: str, flips: List[Dict], page: int = 0) -> discord.Embed:
+        items_per_page = 8
+        total_pages = max(1, (len(flips) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_flips = flips[start:start + items_per_page]
+        run_mode = settings_key.split('|')[4] if '|' in settings_key else ''
+
+        embed = discord.Embed(
+            title="📈 WR Progression",
+            description=self._format_category_line(settings_key),
+            color=0x3498db,
+            timestamp=datetime.now()
+        )
+        lines = []
+        for i, flip in enumerate(page_flips, start + 1):
+            display_time = self._format_explorer_time(flip.get('t', ''), run_mode)
+            lines.append(f"{i}. **{flip.get('d', 'N/A')}** — **{flip.get('n', 'Unknown')}** • {display_time}")
+        embed.add_field(
+            name="Timeline",
+            value="\n".join(lines) if lines else "No progression data.",
+            inline=False
+        )
+        embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
+        return embed
+
+    def create_longevity_embed(self, items: List[Dict], filter_mode: str, page: int = 0) -> discord.Embed:
+        items_per_page = 5
+        total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_items = items[start:start + items_per_page]
+        title_suffix = "Still Standing" if filter_mode == "standing" else "All-Time"
+
+        embed = discord.Embed(
+            title=f"⏳ Longest-Held WRs — {title_suffix}",
+            color=0x9b59b6,
+            timestamp=datetime.now()
+        )
+        lines = []
+        for i, item in enumerate(page_items, start + 1):
+            category = item.get('category', '')
+            run_mode = category.split('|')[4] if '|' in category else ''
+            display_time = self._format_explorer_time(item.get('time', ''), run_mode)
+            standing = " • still standing" if item.get('stillStanding') else ""
+            lines.append(
+                f"{i}. **{item.get('days', '?')} days** — **{item.get('playerName', 'Unknown')}**\n"
+                f"   {self._format_category_line(category)}\n"
+                f"   {display_time} • {item.get('start', '?')} → {item.get('end', '?')}{standing}"
+            )
+        embed.add_field(
+            name="Holders",
+            value="\n".join(lines) if lines else "No longevity data.",
+            inline=False
+        )
+        embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
+        return embed
+
+    def create_improving_embed(self, items: List[Dict], window: str, page: int = 0) -> discord.Embed:
+        items_per_page = 10
+        total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_items = items[start:start + items_per_page]
+
+        embed = discord.Embed(
+            title=f"🚀 Improving Players — {window}",
+            color=0x2ecc71,
+            timestamp=datetime.now()
+        )
+        lines = []
+        for i, item in enumerate(page_items, start + 1):
+            lines.append(
+                f"{i}. **{item.get('playerName', 'Unknown')}** — "
+                f"**+{item.get('delta', 0)}** "
+                f"({item.get('startCount', '?')} → {item.get('endCount', '?')})"
+            )
+        embed.add_field(
+            name="Largest WR Gains",
+            value="\n".join(lines) if lines else "No improving-player data for this window.",
+            inline=False
+        )
+        embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
+        return embed
+
+    def create_contested_embed(self, items: List[Dict], page: int = 0) -> discord.Embed:
+        items_per_page = 8
+        total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_items = items[start:start + items_per_page]
+
+        embed = discord.Embed(
+            title="🔥 Most Contested Categories",
+            color=0xe74c3c,
+            timestamp=datetime.now()
+        )
+        lines = []
+        for i, item in enumerate(page_items, start + 1):
+            lines.append(
+                f"{i}. {self._format_category_line(item.get('category', ''))}\n"
+                f"   **{item.get('flips', 0)}** flips • "
+                f"**{item.get('uniqueHolders', 0)}** holders • "
+                f"{item.get('daysWithRecord', 0)} days"
+            )
+        embed.add_field(
+            name="Top Flips",
+            value="\n".join(lines) if lines else "No contested data.",
+            inline=False
+        )
+        embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
+        return embed
+
+    def create_popularity_embed(self, items: List[Dict], page: int = 0) -> discord.Embed:
+        items_per_page = 8
+        total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_items = items[start:start + items_per_page]
+
+        embed = discord.Embed(
+            title="⭐ Most Popular Categories",
+            color=0xf1c40f,
+            timestamp=datetime.now()
+        )
+        lines = []
+        for i, item in enumerate(page_items, start + 1):
+            lines.append(
+                f"{i}. {self._format_category_line(item.get('category', ''))}\n"
+                f"   **{item.get('uniqueHolders', 0)}** unique holders • "
+                f"**{item.get('flips', 0)}** flips • "
+                f"{item.get('daysWithRecord', 0)} days"
+            )
+        embed.add_field(
+            name="Most Unique Holders",
+            value="\n".join(lines) if lines else "No popularity data.",
+            inline=False
+        )
+        embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
+        return embed
+
+    def create_activity_embed(self, year: str, summary: Dict) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"📅 Activity — {year}",
+            color=0x1abc9c,
+            timestamp=datetime.now()
+        )
+        embed.add_field(
+            name="Year Totals",
+            value=(
+                f"**WR flips:** {summary['total_flips']}\n"
+                f"**New WRs:** {summary['total_new_wrs']}\n"
+                f"**Active days:** {summary['active_days']}"
+            ),
+            inline=False
+        )
+        top_days = summary.get('top_days') or []
+        if top_days:
+            lines = []
+            for i, day in enumerate(top_days, 1):
+                lines.append(
+                    f"{i}. **{day['date']}** — "
+                    f"{day['flips']} flips • {day['newWrs']} new WRs"
+                )
+            embed.add_field(
+                name="Busiest Days",
+                value="\n".join(lines),
+                inline=False
+            )
+        embed.set_footer(text="Data from FastSnakeStats")
+        return embed
+
+    def create_leaderboards_embed(self, board_data: Dict, page: int = 0) -> discord.Embed:
+        items_per_page = 8
+        rows = board_data.get('rows') or []
+        total_pages = max(1, (len(rows) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_rows = rows[start:start + items_per_page]
+
+        embed = discord.Embed(
+            title=(
+                f"🏆 Leaderboards — {board_data['apple_amount']} • "
+                f"{board_data['speed']} • {board_data['size']}"
+            ),
+            color=0x00ff00,
+            timestamp=datetime.now()
+        )
+        lines = []
+        for row in page_rows:
+            line = f"**{row['gamemode']} • {row['run_mode']}** — {row['player']} — {row['time']}"
+            if row.get('link'):
+                line += f" • [View]({row['link']})"
+            lines.append(line)
+        embed.add_field(
+            name=f"World Records ({len(rows)} categories)",
+            value="\n".join(lines) if lines else "No records found for this combination.",
+            inline=False
+        )
+        embed.set_footer(
+            text=f"Data from FastSnakeStats • {board_data['date']} • Page {page + 1}/{total_pages}"
+        )
+        return embed
+
     @app_commands.command(name="record", description="Get world record for specific settings")
     @app_commands.describe(
         game_mode="Game mode (Classic, Wall, Portal, Bridge, etc.)",
@@ -1003,6 +1277,388 @@ class FastSnakeStats(commands.Cog):
         except Exception as e:
             print(f"Error in report command: {e}")
             await interaction.followup.send("❌ An error occurred while generating the weekly report. Please try again.")
+
+    @app_commands.command(name="progression", description="WR change timeline for a category")
+    @app_commands.describe(
+        game_mode="Game mode",
+        apple_amount="Number of apples",
+        speed="Game speed",
+        size="Game size",
+        run_mode="Run mode",
+    )
+    @app_commands.autocomplete(
+        game_mode=record_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+        run_mode=record_run_mode_autocomplete,
+    )
+    async def progression_command(
+        self,
+        interaction: discord.Interaction,
+        game_mode: str,
+        apple_amount: str,
+        speed: str,
+        size: str,
+        run_mode: str,
+    ):
+        await interaction.response.defer()
+        try:
+            if not dm.validate_settings(apple_amount, speed, size, game_mode):
+                await interaction.followup.send("❌ Invalid settings combination.")
+                return
+            if run_mode not in dm.RUN_MODES:
+                await interaction.followup.send("❌ Invalid run mode.")
+                return
+
+            settings_key = dm.get_settings_key(apple_amount, speed, size, game_mode, run_mode)
+            flips = await github_cache_fetcher.get_progression(settings_key)
+            if not flips:
+                await interaction.followup.send(f"❌ No progression data for `{settings_key}`.")
+                return
+
+            embed = self.create_progression_embed(settings_key, flips, page=0)
+            total_pages = max(1, (len(flips) + 7) // 8)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_progression_embed(settings_key, flips, page),
+                )
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in progression command: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching progression data.")
+
+    @app_commands.command(name="longevity", description="Longest-held world records")
+    @app_commands.describe(filter="all = all-time holds, standing = still unbroken")
+    @app_commands.choices(filter=[
+        app_commands.Choice(name="Still standing", value="standing"),
+        app_commands.Choice(name="All-time", value="all"),
+    ])
+    async def longevity_command(
+        self,
+        interaction: discord.Interaction,
+        filter: Optional[app_commands.Choice[str]] = None,
+    ):
+        await interaction.response.defer()
+        try:
+            filter_mode = filter.value if filter else "standing"
+            items = await github_cache_fetcher.get_longevity(filter_mode)
+            if items is None:
+                await interaction.followup.send("❌ Longevity data unavailable.")
+                return
+            if not items:
+                await interaction.followup.send("❌ No longevity entries found.")
+                return
+
+            embed = self.create_longevity_embed(items, filter_mode, page=0)
+            total_pages = max(1, (len(items) + 4) // 5)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_longevity_embed(items, filter_mode, page),
+                )
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in longevity command: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching longevity data.")
+
+    @app_commands.command(name="improving", description="Players gaining the most world records")
+    @app_commands.describe(window="Time window for WR gains")
+    @app_commands.choices(window=[
+        app_commands.Choice(name="7 days", value="7d"),
+        app_commands.Choice(name="30 days", value="30d"),
+        app_commands.Choice(name="90 days", value="90d"),
+        app_commands.Choice(name="365 days", value="365d"),
+    ])
+    async def improving_command(
+        self,
+        interaction: discord.Interaction,
+        window: Optional[app_commands.Choice[str]] = None,
+    ):
+        await interaction.response.defer()
+        try:
+            window_key = window.value if window else "30d"
+            items = await github_cache_fetcher.get_improving(window_key)
+            if items is None:
+                await interaction.followup.send("❌ Improving-player data unavailable.")
+                return
+            if not items:
+                await interaction.followup.send(f"❌ No improving players for window `{window_key}`.")
+                return
+
+            embed = self.create_improving_embed(items, window_key, page=0)
+            total_pages = max(1, (len(items) + 9) // 10)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_improving_embed(items, window_key, page),
+                )
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in improving command: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching improving players.")
+
+    @app_commands.command(name="contested", description="Categories with the most WR flips")
+    async def contested_command(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        try:
+            items = await github_cache_fetcher.get_contested()
+            if items is None:
+                await interaction.followup.send("❌ Contested categories data unavailable.")
+                return
+            if not items:
+                await interaction.followup.send("❌ No contested category data found.")
+                return
+
+            embed = self.create_contested_embed(items, page=0)
+            total_pages = max(1, (len(items) + 7) // 8)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_contested_embed(items, page),
+                )
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in contested command: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching contested categories.")
+
+    @app_commands.command(name="popularity", description="Categories with the most unique WR holders")
+    async def popularity_command(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        try:
+            items = await github_cache_fetcher.get_popularity()
+            if items is None:
+                await interaction.followup.send("❌ Popularity data unavailable.")
+                return
+            if not items:
+                await interaction.followup.send("❌ No popularity data found.")
+                return
+
+            embed = self.create_popularity_embed(items, page=0)
+            total_pages = max(1, (len(items) + 7) // 8)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_popularity_embed(items, page),
+                )
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in popularity command: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching popularity data.")
+
+    @app_commands.command(name="activity", description="Yearly WR activity summary from FastSnakeStats")
+    @app_commands.describe(year="Year to summarize (defaults to latest)")
+    @app_commands.autocomplete(year=activity_year_autocomplete)
+    async def activity_command(self, interaction: discord.Interaction, year: Optional[str] = None):
+        await interaction.response.defer()
+        try:
+            heatmap = await github_cache_fetcher.get_activity_heatmap()
+            if heatmap is None:
+                await interaction.followup.send("❌ Activity data unavailable.")
+                return
+            if not heatmap:
+                await interaction.followup.send("❌ No activity heatmap data found.")
+                return
+
+            years = sorted({entry.get('date', '')[:4] for entry in heatmap if entry.get('date')})
+            selected_year = year or (years[-1] if years else None)
+            if not selected_year or selected_year not in years:
+                await interaction.followup.send(
+                    f"❌ Invalid year. Available: {', '.join(years[-10:])}"
+                )
+                return
+
+            year_entries = [e for e in heatmap if (e.get('date') or '').startswith(selected_year)]
+            total_flips = sum(e.get('flips', 0) for e in year_entries)
+            total_new = sum(e.get('newWrs', 0) for e in year_entries)
+            active_days = sum(1 for e in year_entries if e.get('flips', 0) or e.get('newWrs', 0))
+            top_days = sorted(
+                year_entries,
+                key=lambda e: (e.get('flips', 0) + e.get('newWrs', 0), e.get('flips', 0)),
+                reverse=True,
+            )[:10]
+
+            summary = {
+                'total_flips': total_flips,
+                'total_new_wrs': total_new,
+                'active_days': active_days,
+                'top_days': top_days,
+            }
+            embed = self.create_activity_embed(selected_year, summary)
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in activity command: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching activity data.")
+
+    @app_commands.command(
+        name="leaderboards",
+        description="Full WR table for a count, speed, and size across all categories",
+    )
+    @app_commands.describe(
+        apple_amount="Number of apples",
+        speed="Game speed",
+        size="Game size",
+        date="Historical date - optional",
+    )
+    @app_commands.autocomplete(
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+        date=record_date_autocomplete,
+    )
+    async def leaderboards_command(
+        self,
+        interaction: discord.Interaction,
+        apple_amount: str,
+        speed: str,
+        size: str,
+        date: Optional[str] = None,
+    ):
+        await interaction.response.defer()
+        try:
+            board_data = await self.get_leaderboards_data(apple_amount, speed, size, date)
+            if not board_data:
+                if date:
+                    await interaction.followup.send(
+                        f"❌ No leaderboard data for that combination on {date}."
+                    )
+                else:
+                    await interaction.followup.send(
+                        "❌ No leaderboard data for that combination."
+                    )
+                return
+
+            if not board_data['rows']:
+                await interaction.followup.send(
+                    f"❌ No world records found for "
+                    f"{apple_amount} • {speed} • {size}."
+                )
+                return
+
+            embed = self.create_leaderboards_embed(board_data, page=0)
+            total_pages = max(1, (len(board_data['rows']) + 7) // 8)
+            if total_pages > 1:
+                view = LeaderboardsPaginationView(board_data, interaction.user.id)
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in leaderboards command: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching leaderboards.")
+
+class ListPaginationView(discord.ui.View):
+    """Generic Prev/Next pagination for explorer list embeds."""
+
+    def __init__(self, user_id: int, total_pages: int, embed_factory):
+        super().__init__(timeout=300)
+        self.user_id = user_id
+        self.current_page = 0
+        self.total_pages = max(1, total_pages)
+        self.embed_factory = embed_factory
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
+            return
+        self.current_page = max(0, self.current_page - 1)
+        await self.update_view(interaction)
+
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
+            return
+        self.current_page = min(self.total_pages - 1, self.current_page + 1)
+        await self.update_view(interaction)
+
+    async def update_view(self, interaction: discord.Interaction):
+        self.previous_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page >= self.total_pages - 1
+        embed = self.embed_factory(self.current_page)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+class LeaderboardsPaginationView(discord.ui.View):
+    """Pagination for /leaderboards tables."""
+
+    def __init__(self, board_data: Dict, user_id: int):
+        super().__init__(timeout=300)
+        self.board_data = board_data
+        self.user_id = user_id
+        self.current_page = 0
+        self.items_per_page = 8
+        rows_len = len(board_data.get('rows') or [])
+        self.total_pages = max(1, (rows_len + self.items_per_page - 1) // self.items_per_page)
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
+            return
+        self.current_page = max(0, self.current_page - 1)
+        await self.update_view(interaction)
+
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
+            return
+        self.current_page = min(self.total_pages - 1, self.current_page + 1)
+        await self.update_view(interaction)
+
+    async def update_view(self, interaction: discord.Interaction):
+        self.previous_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page >= self.total_pages - 1
+        embed = self.create_leaderboards_embed(self.board_data, self.current_page)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    def create_leaderboards_embed(self, board_data: Dict, page: int = 0) -> discord.Embed:
+        items_per_page = self.items_per_page
+        rows = board_data.get('rows') or []
+        total_pages = max(1, (len(rows) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_rows = rows[start:start + items_per_page]
+
+        embed = discord.Embed(
+            title=(
+                f"🏆 Leaderboards — {board_data['apple_amount']} • "
+                f"{board_data['speed']} • {board_data['size']}"
+            ),
+            color=0x00ff00,
+            timestamp=datetime.now()
+        )
+        lines = []
+        for row in page_rows:
+            line = f"**{row['gamemode']} • {row['run_mode']}** — {row['player']} — {row['time']}"
+            if row.get('link'):
+                line += f" • [View]({row['link']})"
+            lines.append(line)
+        embed.add_field(
+            name=f"World Records ({len(rows)} categories)",
+            value="\n".join(lines) if lines else "No records found for this combination.",
+            inline=False
+        )
+        embed.set_footer(
+            text=f"Data from FastSnakeStats • {board_data['date']} • Page {page + 1}/{total_pages}"
+        )
+        return embed
 
 class StatsPaginationView(discord.ui.View):
     """View for paginating through stats results"""

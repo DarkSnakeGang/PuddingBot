@@ -60,6 +60,14 @@ def get_settings_key(apple_amount: str, speed: str, size: str, gamemode: str, ru
     """Generate a settings key for looking up records"""
     return f"{apple_amount}|{speed}|{size}|{gamemode}|{run_mode}"
 
+def format_category_key(settings_key: str) -> str:
+    """Format a settings key as readable category text."""
+    parts = settings_key.split('|')
+    if len(parts) != 5:
+        return settings_key
+    apple_amount, speed, size, gamemode, run_mode = parts
+    return f"{gamemode} • {apple_amount} • {speed} • {size} • {run_mode}"
+
 def parse_time(time_str: str) -> str:
     """Parse time from ISO 8601 duration format to readable format with hours support"""
     if not time_str or not isinstance(time_str, str):

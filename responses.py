@@ -144,11 +144,20 @@ def clear_context():
         
         I am PuddingBot, a Discord bot for the Google Snake gaming community. I have the following FastSnakeStats commands available:
         - /record - Get world records for specific game settings (game mode, apple amount, speed, size, run mode, optional date)
+        - /leaderboards - Full WR table for a chosen apple count, speed, and size across all modes (optional date)
         - /available-dates - List available historical dates for viewing past records
         - /player - Get player statistics and recent activity (player name, optional date)
         - /stats - Get top record holders statistics (by number and percentage, optional date)
-        
-        I can help users look up world records, player statistics, and historical data from the FastSnakeStats database. All commands support optional historical date parameters to view data from specific dates.
+        - /report - Weekly report of new and changed world records
+        - /random - Random challenge settings combination
+        - /progression - WR change timeline for a category
+        - /longevity - Longest-held world records (still standing or all-time)
+        - /improving - Players gaining the most WRs over 7d/30d/90d/365d
+        - /contested - Categories with the most WR flips
+        - /popularity - Categories with the most unique historical holders
+        - /activity - Yearly WR flips / new-WR activity summary
+
+        I can help users look up world records, player statistics, historical data, and statistics-explorer analytics from the FastSnakeStats database. Commands that take a date support optional historical date parameters to view past snapshots.
         Portal mode has twice the fruit and each one you eat makes the head escape out of it's matching fruit, and spawns 2 additional fruit.
         Yin yang is the mode with 2 snakes, where one is just an inverted snake. In twin mode, the snake switches places between head and tail only when it eats an apple.
         Google snake has 3 speeds which are Slow, Normal and Fast. Google Snake has 3 sizes, Small, normal and large.

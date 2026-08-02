@@ -11,9 +11,12 @@ class GitHubCacheFetcher:
         self.cache_dir = 'daily'
         self.metadata_url = f"{self.base_url}/time-travel-cache/metadata/available-dates.json"
         self.player_stats_url = f"{self.base_url}/time-travel-cache/metadata/player-stats.json"
+        self.statistics_explorer_url = f"{self.base_url}/time-travel-cache/metadata/statistics-explorer.json"
         self.fallback_to_api = True
         self._player_stats_cache: Optional[Dict] = None
         self._player_stats_cache_fetched_at: Optional[datetime] = None
+        self._statistics_explorer_cache: Optional[Dict] = None
+        self._statistics_explorer_cache_fetched_at: Optional[datetime] = None
     
     async def get_most_recent_date(self) -> Optional[str]:
         """Get the most recent available date from GitHub"""
@@ -208,6 +211,74 @@ class GitHubCacheFetcher:
                     'lastUpdated': metadata.get('lastUpdated'),
                 }
         return None
+
+    async def fetch_statistics_explorer(self, force_refresh: bool = False) -> Optional[Dict]:
+        """Fetch statistics-explorer metadata (cached in memory for 1 hour)."""
+        try:
+            if (
+                not force_refresh
+                and self._statistics_explorer_cache is not None
+                and self._statistics_explorer_cache_fetched_at is not None
+                and (datetime.utcnow() - self._statistics_explorer_cache_fetched_at).total_seconds() < 3600
+            ):
+                return self._statistics_explorer_cache
+
+            response = requests.get(self.statistics_explorer_url, timeout=60)
+            if not response.ok:
+                print('Statistics explorer metadata not available')
+                return self._statistics_explorer_cache
+
+            metadata = response.json()
+            self._statistics_explorer_cache = metadata
+            self._statistics_explorer_cache_fetched_at = datetime.utcnow()
+            return metadata
+        except Exception as error:
+            print(f'Error fetching statistics explorer metadata: {error}')
+            return self._statistics_explorer_cache
+
+    async def get_progression(self, settings_key: str) -> Optional[List[Dict]]:
+        """Get WR progression timeline for a category key."""
+        data = await self.fetch_statistics_explorer()
+        if not data or not data.get('progression'):
+            return None
+        series = data['progression'].get(settings_key)
+        return series if series else None
+
+    async def get_longevity(self, mode: str = 'standing') -> Optional[List[Dict]]:
+        """Get longevity list (`all` or `standing`)."""
+        data = await self.fetch_statistics_explorer()
+        if not data or not data.get('longevity'):
+            return None
+        key = 'standing' if mode == 'standing' else 'all'
+        return data['longevity'].get(key) or []
+
+    async def get_improving(self, window: str = '30d') -> Optional[List[Dict]]:
+        """Get improving players for a window (`7d`, `30d`, `90d`, `365d`)."""
+        data = await self.fetch_statistics_explorer()
+        if not data or not data.get('improving'):
+            return None
+        return data['improving'].get(window) or []
+
+    async def get_contested(self) -> Optional[List[Dict]]:
+        """Get most contested categories."""
+        data = await self.fetch_statistics_explorer()
+        if not data:
+            return None
+        return data.get('contested') or []
+
+    async def get_popularity(self) -> Optional[List[Dict]]:
+        """Get most popular categories by unique holders."""
+        data = await self.fetch_statistics_explorer()
+        if not data:
+            return None
+        return data.get('popularity') or []
+
+    async def get_activity_heatmap(self) -> Optional[List[Dict]]:
+        """Get daily activity heatmap entries."""
+        data = await self.fetch_statistics_explorer()
+        if not data:
+            return None
+        return data.get('activityHeatmap') or []
 
 # Create global instance
 github_cache_fetcher = GitHubCacheFetcher()
