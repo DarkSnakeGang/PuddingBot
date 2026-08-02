@@ -149,6 +149,7 @@ def clear_context():
         - /player - Get player statistics and recent activity (player name, optional date)
         - /stats - Get top record holders statistics (by number and percentage, optional date)
         - /report - Weekly report of new and changed world records
+        - /monthly - Monthly oldest-records update (longstanding WRs beaten + current top oldest)
         - /random - Random challenge settings combination
         - /progression - WR change timeline for a category
         - /longevity - Longest-held world records (still standing or all-time)

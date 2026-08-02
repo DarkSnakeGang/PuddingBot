@@ -1,14 +1,23 @@
 import discord
 from discord import app_commands
-from discord.ext import commands
-from typing import Optional, Dict, List
+from discord.ext import commands, tasks
+from typing import Optional, Dict, List, Tuple
 import asyncio
 import os
 import random
-from datetime import datetime
+from calendar import monthrange, month_name
+from datetime import datetime, date, time, timedelta, timezone
 
 from github_cache_fetcher import github_cache_fetcher
 import data_management as dm
+
+# google-snake channel (snake emoji) — https://discord.com/channels/723093146954760222/723093815786864661
+GOOGLE_SNAKE_CHANNEL_ID = int(os.getenv("GOOGLE_SNAKE_CHANNEL_ID", "723093815786864661"))
+# Matches daih's "June 2021 or before" oldest-list cutoff
+OLD_RECORD_CUTOFF = os.getenv("OLD_RECORD_CUTOFF", "2021-06-30")
+# Noon local for the scheduled post (default UTC+3)
+_MONTHLY_UTC_OFFSET = int(os.getenv("MONTHLY_REPORT_UTC_OFFSET", "3"))
+MONTHLY_REPORT_TZ = timezone(timedelta(hours=_MONTHLY_UTC_OFFSET))
 
 
 class FastSnakeStats(commands.Cog):
@@ -18,6 +27,10 @@ class FastSnakeStats(commands.Cog):
         self.bot = bot
         self.cache_data = {}
         self.last_cache_update = None
+        self.monthly_oldest_report_task.start()
+
+    def cog_unload(self):
+        self.monthly_oldest_report_task.cancel()
     
     async def get_record_data(self, apple_amount: str, speed: str, size: str, gamemode: str, date: Optional[str] = None, run_mode: str = "25 Apples") -> Optional[Dict]:
         """Get record data for specific settings"""
@@ -274,6 +287,275 @@ class FastSnakeStats(commands.Cog):
         except Exception as e:
             print(f"Error getting weekly report data: {e}")
             return None
+
+    def _previous_calendar_month_bounds(self, ref: Optional[date] = None) -> Tuple[str, str, str]:
+        """Return (start_iso, end_iso, label) for the previous calendar month."""
+        today = ref or datetime.now(MONTHLY_REPORT_TZ).date()
+        first_this = today.replace(day=1)
+        last_prev = first_this - timedelta(days=1)
+        first_prev = last_prev.replace(day=1)
+        label = f"{month_name[first_prev.month]} {first_prev.year}"
+        return first_prev.isoformat(), last_prev.isoformat(), label
+
+    def _format_hold_duration(self, start: str, end: str) -> str:
+        """Human duration like '5 years, 4 months and 23 days'."""
+        try:
+            s = datetime.fromisoformat(start).date()
+            e = datetime.fromisoformat(end).date()
+        except ValueError:
+            return "unknown duration"
+
+        years = e.year - s.year
+        months = e.month - s.month
+        days = e.day - s.day
+        if days < 0:
+            months -= 1
+            prev_month = e.month - 1 or 12
+            prev_year = e.year if e.month > 1 else e.year - 1
+            days += monthrange(prev_year, prev_month)[1]
+        if months < 0:
+            years -= 1
+            months += 12
+
+        parts = []
+        if years:
+            parts.append(f"{years} year" + ("s" if years != 1 else ""))
+        if months:
+            parts.append(f"{months} month" + ("s" if months != 1 else ""))
+        if days or not parts:
+            parts.append(f"{days} day" + ("s" if days != 1 else ""))
+        if len(parts) == 1:
+            return parts[0]
+        if len(parts) == 2:
+            return f"{parts[0]} and {parts[1]}"
+        return f"{parts[0]}, {parts[1]} and {parts[2]}"
+
+    def _hold_day_count(self, start: str, end: str) -> int:
+        try:
+            return (datetime.fromisoformat(end).date() - datetime.fromisoformat(start).date()).days
+        except ValueError:
+            return 0
+
+    async def get_monthly_oldest_report_data(self) -> Optional[Dict]:
+        """Oldest-list update: longstanding holds beaten last month + current oldest."""
+        try:
+            period_start, period_end, period_label = self._previous_calendar_month_bounds()
+            explorer = await github_cache_fetcher.fetch_statistics_explorer()
+            if not explorer:
+                return None
+
+            progression = explorer.get("progression") or {}
+            beaten: List[Dict] = []
+            for category, flips in progression.items():
+                if not flips or len(flips) < 2:
+                    continue
+                for i in range(len(flips) - 1):
+                    start = flips[i].get("d")
+                    end = flips[i + 1].get("d")
+                    if not start or not end:
+                        continue
+                    if end < period_start or end > period_end:
+                        continue
+                    if start > OLD_RECORD_CUTOFF:
+                        continue
+                    beaten.append({
+                        "category": category,
+                        "old_player": flips[i].get("n") or "Unknown",
+                        "new_player": flips[i + 1].get("n") or "Unknown",
+                        "start": start,
+                        "end": end,
+                        "days": self._hold_day_count(start, end),
+                        "duration": self._format_hold_duration(start, end),
+                        "old_time": flips[i].get("t") or "",
+                        "new_time": flips[i + 1].get("t") or "",
+                        "old_weblink": flips[i].get("w"),
+                        "new_weblink": flips[i + 1].get("w"),
+                    })
+
+            beaten.sort(key=lambda item: (-item["days"], item["end"]))
+
+            longevity = explorer.get("longevity") or {}
+            standing = longevity.get("standing") or []
+            all_time = longevity.get("all") or []
+            remaining_old = sum(
+                1 for item in standing if (item.get("start") or "") <= OLD_RECORD_CUTOFF
+            )
+
+            return {
+                "period_start": period_start,
+                "period_end": period_end,
+                "period_label": period_label,
+                "cutoff": OLD_RECORD_CUTOFF,
+                "beaten": beaten,
+                "remaining_old": remaining_old,
+                "oldest_top": all_time[:10],
+                "standing_count": len(standing),
+            }
+        except Exception as e:
+            print(f"Error getting monthly oldest report data: {e}")
+            return None
+
+    def create_monthly_beaten_embed(self, report_data: Dict, page: int = 0) -> discord.Embed:
+        """Embed listing longstanding records beaten in the period."""
+        beaten = report_data["beaten"]
+        items_per_page = 3
+        total_pages = max(1, (len(beaten) + items_per_page - 1) // items_per_page)
+        page = max(0, min(page, total_pages - 1))
+
+        embed = discord.Embed(
+            title=f"📅 Monthly Oldest Records — {report_data['period_label']}",
+            description=(
+                f"Longstanding holds that began on or before **{report_data['cutoff']}** "
+                f"and were beaten between **{report_data['period_start']}** and "
+                f"**{report_data['period_end']}**."
+            ),
+            color=0xe67e22,
+            timestamp=datetime.now(),
+        )
+        embed.add_field(
+            name="📊 Summary",
+            value=(
+                f"**{len(beaten)}** oldest-list record"
+                f"{'' if len(beaten) == 1 else 's'} beaten\n"
+                f"**{report_data['remaining_old']}** still standing from "
+                f"June 2021 or earlier"
+            ),
+            inline=False,
+        )
+
+        if not beaten:
+            embed.add_field(
+                name="🏆 Beaten Holds",
+                value="No June-2021-or-earlier holds fell this month. The legends still stand.",
+                inline=False,
+            )
+        else:
+            start_idx = page * items_per_page
+            page_items = beaten[start_idx:start_idx + items_per_page]
+            lines = []
+            for i, item in enumerate(page_items, start_idx + 1):
+                run_mode = item["category"].split("|")[4] if "|" in item["category"] else ""
+                old_time = self._format_explorer_time(item.get("old_time", ""), run_mode)
+                new_time = self._format_explorer_time(item.get("new_time", ""), run_mode)
+                if item.get("old_weblink") and old_time != "N/A":
+                    old_time = f"[{old_time}]({item['old_weblink']})"
+                if item.get("new_weblink") and new_time != "N/A":
+                    new_time = f"[{new_time}]({item['new_weblink']})"
+                lines.append(
+                    f"**{i}.** {self._format_category_line(item['category'])}\n"
+                    f"**{item['old_player']}** → **{item['new_player']}** · "
+                    f"after **{item['duration']}**\n"
+                    f"{old_time} → {new_time} · beaten `{item['end']}`"
+                )
+            embed.add_field(
+                name="🏆 Beaten Holds",
+                value="\n\n".join(lines),
+                inline=False,
+            )
+
+        embed.set_footer(
+            text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}"
+        )
+        return embed
+
+    def create_monthly_oldest_embed(self, report_data: Dict) -> discord.Embed:
+        """Embed for the current top 10 longest holds (standing + historical)."""
+        embed = discord.Embed(
+            title="⏳ Top 10 Oldest Holds",
+            description=(
+                "Longest holds of all time. "
+                "● still a WR · ○ no longer a WR (but still a top historical hold)."
+            ),
+            color=0x9b59b6,
+            timestamp=datetime.now(),
+        )
+        lines = []
+        for i, item in enumerate(report_data.get("oldest_top") or [], 1):
+            category = item.get("category", "")
+            standing = bool(item.get("stillStanding"))
+            name = item.get("playerName", "Unknown")
+            days = item.get("days", "?")
+            start = item.get("start", "?")
+            end_label = "present" if standing else item.get("end", "?")
+            time_str = self._format_linked_hold_time(item)
+            cat = self._format_category_line(category)
+            status = "still WR" if standing else "fallen"
+            marker = "●" if standing else "○"
+            lines.append(
+                f"**{i}.** {marker} **{days}d** — **{name}** — {cat}\n"
+                f"{time_str} · `{start}` → `{end_label}` · {status}"
+            )
+        if not lines:
+            embed.add_field(
+                name="All-Time Longevity",
+                value="No longevity data available.",
+                inline=False,
+            )
+        else:
+            mid = 5
+            embed.add_field(
+                name="All-Time Longevity (1–5)",
+                value="\n\n".join(lines[:mid]),
+                inline=False,
+            )
+            if len(lines) > mid:
+                embed.add_field(
+                    name="All-Time Longevity (6–10)",
+                    value="\n\n".join(lines[mid:]),
+                    inline=False,
+                )
+        embed.set_footer(text="Data from FastSnakeStats • Monthly oldest update")
+        return embed
+
+    def build_monthly_report_embeds(self, report_data: Dict, beaten_page: int = 0) -> List[discord.Embed]:
+        return [
+            self.create_monthly_beaten_embed(report_data, page=beaten_page),
+            self.create_monthly_oldest_embed(report_data),
+        ]
+
+    async def post_monthly_oldest_report(self, channel) -> bool:
+        """Post the monthly oldest-records update to a channel."""
+        report_data = await self.get_monthly_oldest_report_data()
+        if not report_data:
+            await channel.send("❌ Unable to build the monthly oldest-records report.")
+            return False
+
+        embeds = self.build_monthly_report_embeds(report_data, beaten_page=0)
+        items_per_page = 3
+        beaten_count = len(report_data["beaten"])
+        total_pages = max(1, (beaten_count + items_per_page - 1) // items_per_page)
+
+        if total_pages <= 1:
+            await channel.send(embeds=embeds)
+        else:
+            # Scheduled posts: dump every beaten page as separate messages
+            await channel.send(embeds=embeds)
+            for page in range(1, total_pages):
+                await channel.send(embed=self.create_monthly_beaten_embed(report_data, page=page))
+        return True
+
+    @tasks.loop(time=time(hour=12, minute=0, tzinfo=MONTHLY_REPORT_TZ))
+    async def monthly_oldest_report_task(self):
+        """Post on the 1st of each month at 12:00 (UTC+3 by default)."""
+        now = datetime.now(MONTHLY_REPORT_TZ)
+        if now.day != 1:
+            return
+        channel = self.bot.get_channel(GOOGLE_SNAKE_CHANNEL_ID)
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(GOOGLE_SNAKE_CHANNEL_ID)
+            except Exception as e:
+                print(f"Monthly report: could not fetch channel {GOOGLE_SNAKE_CHANNEL_ID}: {e}")
+                return
+        try:
+            print(f"Posting monthly oldest report to #{getattr(channel, 'name', GOOGLE_SNAKE_CHANNEL_ID)}")
+            await self.post_monthly_oldest_report(channel)
+        except Exception as e:
+            print(f"Error posting monthly oldest report: {e}")
+
+    @monthly_oldest_report_task.before_loop
+    async def before_monthly_oldest_report_task(self):
+        await self.bot.wait_until_ready()
     
     def _calculate_improvement(self, old_run: dict, new_run: dict) -> Optional[float]:
         """Calculate time improvement in milliseconds"""
@@ -1416,6 +1698,35 @@ class FastSnakeStats(commands.Cog):
             print(f"Error in report command: {e}")
             await interaction.followup.send("❌ An error occurred while generating the weekly report. Please try again.")
 
+    @app_commands.command(
+        name="monthly",
+        description="Monthly oldest-records update (beaten longstanding WRs + current oldest)",
+    )
+    async def monthly_command(self, interaction: discord.Interaction):
+        """Test / preview the monthly oldest-records report."""
+        await interaction.response.defer()
+        try:
+            report_data = await self.get_monthly_oldest_report_data()
+            if not report_data:
+                await interaction.followup.send(
+                    "❌ Unable to fetch monthly oldest-records data. Please try again later."
+                )
+                return
+
+            embeds = self.build_monthly_report_embeds(report_data, beaten_page=0)
+            beaten_count = len(report_data["beaten"])
+            total_pages = max(1, (beaten_count + 2) // 3)
+            if total_pages > 1:
+                view = MonthlyReportPaginationView(self, report_data, interaction.user.id)
+                await interaction.followup.send(embeds=embeds, view=view)
+            else:
+                await interaction.followup.send(embeds=embeds)
+        except Exception as e:
+            print(f"Error in monthly command: {e}")
+            await interaction.followup.send(
+                "❌ An error occurred while generating the monthly report."
+            )
+
     @app_commands.command(name="progression", description="WR change timeline for a category")
     @app_commands.describe(
         game_mode="Game mode",
@@ -1850,6 +2161,43 @@ class FastSnakeStats(commands.Cog):
         except Exception as e:
             print(f"Error in leaderboards command: {e}")
             await interaction.followup.send("❌ An error occurred while fetching leaderboards.")
+
+class MonthlyReportPaginationView(discord.ui.View):
+    """Paginate the beaten-holds embed while keeping the top-10 embed."""
+
+    def __init__(self, cog: "FastSnakeStats", report_data: Dict, user_id: int):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.report_data = report_data
+        self.user_id = user_id
+        self.current_page = 0
+        self.items_per_page = 3
+        beaten_count = len(report_data.get("beaten") or [])
+        self.total_pages = max(1, (beaten_count + self.items_per_page - 1) // self.items_per_page)
+        self.next_button.disabled = self.total_pages <= 1
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
+            return
+        self.current_page = max(0, self.current_page - 1)
+        await self.update_view(interaction)
+
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
+            return
+        self.current_page = min(self.total_pages - 1, self.current_page + 1)
+        await self.update_view(interaction)
+
+    async def update_view(self, interaction: discord.Interaction):
+        self.previous_button.disabled = self.current_page == 0
+        self.next_button.disabled = self.current_page >= self.total_pages - 1
+        embeds = self.cog.build_monthly_report_embeds(self.report_data, beaten_page=self.current_page)
+        await interaction.response.edit_message(embeds=embeds, view=self)
+
 
 class ListPaginationView(discord.ui.View):
     """Generic Prev/Next pagination for explorer list embeds."""
