@@ -1,8 +1,10 @@
 from typing import Final, Optional, List
 import os
+import random
+import re
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
-from discord import Intents, Message, Object, NotFound, Forbidden, HTTPException
+from discord import Intents, Message, Object, NotFound, Forbidden, HTTPException, File
 from discord.ext import commands
 from responses import get_response, is_allowed_poi_message
 import asyncio
@@ -21,6 +23,28 @@ TOKEN: Final[Optional[str]] = _env('DISCORD_TOKEN')
 GUILD_ID: Final[Optional[str]] = _env('DISCORD_GUILD_ID')
 POI_CHANNEL_NAME: Final[str] = _env('POI_CHANNEL_NAME', 'poi-🐡') or 'poi-🐡'
 POI_CHANNEL_ID: Final[Optional[str]] = _env('POI_CHANNEL_ID', '1284209751952986223')
+SIXTY_SEVEN_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'sixty_seven.png')
+END_CAREER_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'end_career.png')
+WALL_ALL_TRIGGERS: Final[tuple] = (
+    'wall all mainboard',
+    'wall all normal size',
+    'wall all large',
+)
+OFF_WORK_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'off_work.gif')
+GOING_FOR_TRIGGERS: Final[tuple] = (
+    'im going for classic 25',
+    "i'm going for classic 25",
+    'im going for wall 25',
+    "i'm going for wall 25",
+    'im going for classic 50',
+    "i'm going for classic 50",
+    'im going for borderless 50',
+    "i'm going for borderless 50",
+)
+WAIT_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'wait.gif')
+BAD_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'bad.gif')
+SOKOBAN_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'sokoban.gif')
+PATTERN_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'pattern.gif')
 
 if not TOKEN:
     raise SystemExit(
@@ -112,6 +136,80 @@ async def on_message(message: Message) -> None:
             asyncio.create_task(purge_non_poi_messages(message.channel))
     elif channel == "Direct Message with Unknown User":
         return
+
+    # 1/67 easter egg when a message contains "67"
+    if "67" in user_message and random.randint(1, 67) == 1 and os.path.isfile(SIXTY_SEVEN_ASSET):
+        try:
+            await message.channel.send(file=File(SIXTY_SEVEN_ASSET, filename="67.png"))
+        except Exception as e:
+            print(f"Failed to send 67 meme: {e}")
+
+    # 1/16 easter egg for wall-all category mentions
+    lowered_message = user_message.lower()
+    if (
+        any(trigger in lowered_message for trigger in WALL_ALL_TRIGGERS)
+        and random.randint(1, 16) == 1
+        and os.path.isfile(END_CAREER_ASSET)
+    ):
+        try:
+            await message.channel.send(file=File(END_CAREER_ASSET, filename="end_career.png"))
+        except Exception as e:
+            print(f"Failed to send wall-all meme: {e}")
+
+    # 1/4 easter egg for "im going for ..." grind announcements
+    if (
+        any(trigger in lowered_message for trigger in GOING_FOR_TRIGGERS)
+        and random.randint(1, 4) == 1
+        and os.path.isfile(OFF_WORK_ASSET)
+    ):
+        try:
+            await message.channel.send(file=File(OFF_WORK_ASSET, filename="off_work.gif"))
+        except Exception as e:
+            print(f"Failed to send going-for meme: {e}")
+
+    # 1/100 easter egg when someone says "wait"
+    if (
+        re.search(r"\bwait\b", lowered_message)
+        and random.randint(1, 100) == 1
+        and os.path.isfile(WAIT_ASSET)
+    ):
+        try:
+            await message.channel.send(file=File(WAIT_ASSET, filename="wait.gif"))
+        except Exception as e:
+            print(f"Failed to send wait meme: {e}")
+
+    # 1/100 easter egg when someone says "bad"
+    if (
+        re.search(r"\bbad\b", lowered_message)
+        and random.randint(1, 100) == 1
+        and os.path.isfile(BAD_ASSET)
+    ):
+        try:
+            await message.channel.send(file=File(BAD_ASSET, filename="bad.gif"))
+        except Exception as e:
+            print(f"Failed to send bad meme: {e}")
+
+    # 1/256 easter egg when sokoban is mentioned
+    if (
+        re.search(r"\bsokoban\b", lowered_message)
+        and random.randint(1, 256) == 1
+        and os.path.isfile(SOKOBAN_ASSET)
+    ):
+        try:
+            await message.channel.send(file=File(SOKOBAN_ASSET, filename="sokoban.gif"))
+        except Exception as e:
+            print(f"Failed to send sokoban meme: {e}")
+
+    # 1/16 easter egg when pattern is mentioned
+    if (
+        re.search(r"\bpattern\b", lowered_message)
+        and random.randint(1, 16) == 1
+        and os.path.isfile(PATTERN_ASSET)
+    ):
+        try:
+            await message.channel.send(file=File(PATTERN_ASSET, filename="pattern.gif"))
+        except Exception as e:
+            print(f"Failed to send pattern meme: {e}")
 
     if not (user_message.lower()[:3] == 'gif' and in_poi):
         await send_message(message, user_message, message.author.id)
