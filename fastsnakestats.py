@@ -974,8 +974,8 @@ class FastSnakeStats(commands.Cog):
         link_text = f" • [View]({link})" if link else ""
         return (
             f"{index}. **{item.get('playerName', 'Unknown')}** — "
-            f"{self._format_category_line(category)}\n"
-            f"   **{item.get('days', '?')}** days • {display_time} • "
+            f"{self._format_category_line(category)} — "
+            f"**{item.get('days', '?')}** days • {display_time} • "
             f"{item.get('start', '?')} → {item.get('end', '?')}{standing}{link_text}"
         )
 
