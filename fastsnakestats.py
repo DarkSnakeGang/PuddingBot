@@ -335,12 +335,30 @@ class FastSnakeStats(commands.Cog):
         return complete[0]
 
     def _longevity_snapshot_from_progression(
-        self, progression: Dict, as_of: str, limit: int = 10
+        self,
+        progression: Dict,
+        as_of: str,
+        limit: int = 10,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+        standing_only: bool = False,
     ) -> Tuple[List[Dict], int]:
         """Top longevity holds and year-old+ standing count as of a date, from progression."""
         holds: List[Dict] = []
         for category, flips in progression.items():
             if not flips:
+                continue
+            if not self._category_matches_filters(
+                category,
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+                run_mode=run_mode,
+            ):
                 continue
             for i, flip in enumerate(flips):
                 start = flip.get("d")
@@ -369,11 +387,47 @@ class FastSnakeStats(commands.Cog):
 
         holds.sort(key=lambda item: (-item["days"], item["start"]))
         standing = [item for item in holds if item["stillStanding"]]
-        # Match the usual "oldest list" size (~top 50 standing)
         remaining_old = sum(
             1 for item in standing[:50] if item["days"] >= MIN_OLDEST_HOLD_DAYS
         )
-        return holds[:limit], remaining_old
+        ranked = standing if standing_only else holds
+        return ranked[:limit], remaining_old
+
+    async def _get_longevity_items(
+        self,
+        mode: str = "standing",
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+        limit: int = 50,
+    ) -> Optional[List[Dict]]:
+        filters = dict(
+            game_mode=game_mode,
+            apple_amount=apple_amount,
+            speed=speed,
+            size=size,
+            run_mode=run_mode,
+        )
+        if not self._any_category_filters(**filters):
+            return await github_cache_fetcher.get_longevity(mode)
+
+        explorer = await github_cache_fetcher.fetch_statistics_explorer()
+        if not explorer:
+            return None
+        progression = explorer.get("progression") or {}
+        latest = ((explorer.get("meta") or {}).get("dateRange") or {}).get("latest")
+        if not latest:
+            latest = datetime.now().strftime("%Y-%m-%d")
+        items, _ = self._longevity_snapshot_from_progression(
+            progression,
+            latest,
+            limit=limit,
+            standing_only=(mode == "standing"),
+            **filters,
+        )
+        return items
 
     def _format_hold_duration(self, start: str, end: str) -> str:
         """Human duration like '5 years, 4 months and 23 days'."""
@@ -1212,15 +1266,24 @@ class FastSnakeStats(commands.Cog):
         embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
         return embed
 
-    def create_longevity_embed(self, items: List[Dict], filter_mode: str, page: int = 0) -> discord.Embed:
+    def create_longevity_embed(
+        self,
+        items: List[Dict],
+        filter_mode: str,
+        page: int = 0,
+        filter_label: str = "",
+    ) -> discord.Embed:
         items_per_page = 5
         total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
         start = page * items_per_page
         page_items = items[start:start + items_per_page]
         title_suffix = "Still Standing" if filter_mode == "standing" else "All-Time"
+        title = f"⏳ Longest-Held WRs — {title_suffix}"
+        if filter_label:
+            title += f" — {filter_label}"
 
         embed = discord.Embed(
-            title=f"⏳ Longest-Held WRs — {title_suffix}",
+            title=title,
             color=0x9b59b6,
             timestamp=datetime.now()
         )
@@ -1279,14 +1342,191 @@ class FastSnakeStats(commands.Cog):
         embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
         return embed
 
-    def create_contested_embed(self, items: List[Dict], page: int = 0) -> discord.Embed:
+    def _parse_category_parts(self, settings_key: str) -> Optional[Dict[str, str]]:
+        parts = settings_key.split('|')
+        if len(parts) != 5:
+            return None
+        return {
+            'apple_amount': parts[0],
+            'speed': parts[1],
+            'size': parts[2],
+            'game_mode': parts[3],
+            'run_mode': parts[4],
+        }
+
+    def _category_matches_filters(
+        self,
+        settings_key: str,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+    ) -> bool:
+        parts = self._parse_category_parts(settings_key)
+        if not parts:
+            return False
+        checks = {
+            'game_mode': game_mode,
+            'apple_amount': apple_amount,
+            'speed': speed,
+            'size': size,
+            'run_mode': run_mode,
+        }
+        for key, value in checks.items():
+            if value and parts[key] != value:
+                return False
+        return True
+
+    def _format_category_filters(
+        self,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+    ) -> str:
+        bits = [v for v in (game_mode, apple_amount, speed, size, run_mode) if v]
+        return " • ".join(bits)
+
+    def _any_category_filters(
+        self,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+    ) -> bool:
+        return any((game_mode, apple_amount, speed, size, run_mode))
+
+    def _filter_category_rows(
+        self,
+        items: List[Dict],
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+    ) -> List[Dict]:
+        if not self._any_category_filters(game_mode, apple_amount, speed, size, run_mode):
+            return items
+        return [
+            item for item in items
+            if self._category_matches_filters(
+                item.get('category', ''),
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+                run_mode=run_mode,
+            )
+        ]
+
+    async def _build_ranked_category_lists_from_progression(
+        self,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+        limit: int = 50,
+    ) -> Optional[Dict[str, List[Dict]]]:
+        """Rebuild contested/popularity/stale for a filter from full progression."""
+        explorer = await github_cache_fetcher.fetch_statistics_explorer()
+        if not explorer:
+            return None
+        progression = explorer.get('progression') or {}
+        latest = ((explorer.get('meta') or {}).get('dateRange') or {}).get('latest')
+        if not latest:
+            latest = datetime.now().strftime('%Y-%m-%d')
+
+        contested: List[Dict] = []
+        popularity: List[Dict] = []
+        stale: List[Dict] = []
+
+        for category, flips in progression.items():
+            if not flips:
+                continue
+            if not self._category_matches_filters(
+                category,
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+                run_mode=run_mode,
+            ):
+                continue
+
+            holders = {flip.get('i') or flip.get('n') for flip in flips if flip.get('i') or flip.get('n')}
+            flip_count = max(0, len(flips) - 1)
+            first = flips[0].get('d') or latest
+            last = flips[-1].get('d') or latest
+            days_with_record = max(1, self._hold_day_count(first, latest) + 1)
+            hold_days = self._hold_day_count(last, latest)
+            row = {
+                'category': category,
+                'flips': flip_count,
+                'uniqueHolders': len(holders),
+                'tiedHolders': 1,
+                'daysWithRecord': days_with_record,
+                'holdStart': last,
+                'holdDays': hold_days,
+            }
+            contested.append(row)
+            # Match FastSnakeStats popularity exclusion
+            parts = self._parse_category_parts(category) or {}
+            if not (
+                parts.get('game_mode') == 'Statue'
+                and parts.get('run_mode') == 'High Score'
+                and parts.get('size') == 'Small'
+                and parts.get('apple_amount') == 'Bomb'
+            ):
+                popularity.append(row)
+            if days_with_record > 0:
+                stale.append(row)
+
+        contested.sort(key=lambda r: (-r['flips'], -r['uniqueHolders']))
+        popularity.sort(key=lambda r: (-r['uniqueHolders'], -r['daysWithRecord']))
+        stale.sort(
+            key=lambda r: (r['flips'], r['uniqueHolders'], r['tiedHolders'], -r['holdDays'])
+        )
+        return {
+            'contested': contested[:limit],
+            'popularity': popularity[:limit],
+            'stale': stale[:limit],
+        }
+
+    async def _get_contested_items(self, **filters) -> Optional[List[Dict]]:
+        if not self._any_category_filters(**filters):
+            return await github_cache_fetcher.get_contested()
+        built = await self._build_ranked_category_lists_from_progression(**filters)
+        return None if built is None else built['contested']
+
+    async def _get_popularity_items(self, **filters) -> Optional[List[Dict]]:
+        if not self._any_category_filters(**filters):
+            return await github_cache_fetcher.get_popularity()
+        built = await self._build_ranked_category_lists_from_progression(**filters)
+        return None if built is None else built['popularity']
+
+    async def _get_stale_items(self, **filters) -> Optional[List[Dict]]:
+        if not self._any_category_filters(**filters):
+            return await github_cache_fetcher.get_stale()
+        built = await self._build_ranked_category_lists_from_progression(**filters)
+        return None if built is None else built['stale']
+
+    def create_contested_embed(
+        self, items: List[Dict], page: int = 0, filter_label: str = ""
+    ) -> discord.Embed:
         items_per_page = 8
         total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
         start = page * items_per_page
         page_items = items[start:start + items_per_page]
+        title = "🔥 Most Contested Categories"
+        if filter_label:
+            title += f" — {filter_label}"
 
         embed = discord.Embed(
-            title="🔥 Most Contested Categories",
+            title=title,
             color=0xe74c3c,
             timestamp=datetime.now()
         )
@@ -1306,14 +1546,19 @@ class FastSnakeStats(commands.Cog):
         embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
         return embed
 
-    def create_popularity_embed(self, items: List[Dict], page: int = 0) -> discord.Embed:
+    def create_popularity_embed(
+        self, items: List[Dict], page: int = 0, filter_label: str = ""
+    ) -> discord.Embed:
         items_per_page = 8
         total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
         start = page * items_per_page
         page_items = items[start:start + items_per_page]
+        title = "⭐ Most Popular Categories"
+        if filter_label:
+            title += f" — {filter_label}"
 
         embed = discord.Embed(
-            title="⭐ Most Popular Categories",
+            title=title,
             color=0xf1c40f,
             timestamp=datetime.now()
         )
@@ -1333,14 +1578,19 @@ class FastSnakeStats(commands.Cog):
         embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
         return embed
 
-    def create_stale_embed(self, items: List[Dict], page: int = 0) -> discord.Embed:
+    def create_stale_embed(
+        self, items: List[Dict], page: int = 0, filter_label: str = ""
+    ) -> discord.Embed:
         items_per_page = 8
         total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
         start = page * items_per_page
         page_items = items[start:start + items_per_page]
+        title = "🧊 Stalest Categories"
+        if filter_label:
+            title += f" — {filter_label}"
 
         embed = discord.Embed(
-            title="🧊 Stalest Categories",
+            title=title,
             color=0x95a5a6,
             timestamp=datetime.now()
         )
@@ -1428,7 +1678,16 @@ class FastSnakeStats(commands.Cog):
         start = page * items_per_page
         page_items = items[start:start + items_per_page]
         tier = unheld_data.get('tier')
-        title = f"🕳️ Unheld Categories — {tier}" if tier else "🕳️ Unheld Categories"
+        filter_label = unheld_data.get('filter_label') or ""
+        title_bits = []
+        if tier:
+            title_bits.append(str(tier))
+        if filter_label:
+            title_bits.append(filter_label)
+        title = (
+            f"🕳️ Unheld Categories — {' • '.join(title_bits)}"
+            if title_bits else "🕳️ Unheld Categories"
+        )
 
         embed = discord.Embed(
             title=title,
@@ -1897,34 +2156,66 @@ class FastSnakeStats(commands.Cog):
             await interaction.followup.send("❌ An error occurred while fetching progression data.")
 
     @app_commands.command(name="longevity", description="Longest-held world records")
-    @app_commands.describe(filter="all = all-time holds, standing = still unbroken")
+    @app_commands.describe(
+        filter="all = all-time holds, standing = still unbroken",
+        game_mode="Optional game mode filter",
+        apple_amount="Optional apple count filter",
+        speed="Optional speed filter",
+        size="Optional size filter",
+        run_mode="Optional run mode filter",
+    )
     @app_commands.choices(filter=[
         app_commands.Choice(name="Still standing", value="standing"),
         app_commands.Choice(name="All-time", value="all"),
     ])
+    @app_commands.autocomplete(
+        game_mode=record_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+        run_mode=record_run_mode_autocomplete,
+    )
     async def longevity_command(
         self,
         interaction: discord.Interaction,
         filter: Optional[app_commands.Choice[str]] = None,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
     ):
         await interaction.response.defer()
         try:
             filter_mode = filter.value if filter else "standing"
-            items = await github_cache_fetcher.get_longevity(filter_mode)
+            filters = dict(
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+                run_mode=run_mode,
+            )
+            filter_label = self._format_category_filters(**filters)
+            items = await self._get_longevity_items(mode=filter_mode, **filters)
             if items is None:
                 await interaction.followup.send("❌ Longevity data unavailable.")
                 return
             if not items:
-                await interaction.followup.send("❌ No longevity entries found.")
+                suffix = f" for `{filter_label}`" if filter_label else ""
+                await interaction.followup.send(f"❌ No longevity entries found{suffix}.")
                 return
 
-            embed = self.create_longevity_embed(items, filter_mode, page=0)
+            embed = self.create_longevity_embed(
+                items, filter_mode, page=0, filter_label=filter_label
+            )
             total_pages = max(1, (len(items) + 4) // 5)
             if total_pages > 1:
                 view = ListPaginationView(
                     interaction.user.id,
                     total_pages,
-                    lambda page: self.create_longevity_embed(items, filter_mode, page),
+                    lambda page: self.create_longevity_embed(
+                        items, filter_mode, page, filter_label
+                    ),
                 )
                 await interaction.followup.send(embed=embed, view=view)
             else:
@@ -1973,24 +2264,55 @@ class FastSnakeStats(commands.Cog):
             await interaction.followup.send("❌ An error occurred while fetching improving players.")
 
     @app_commands.command(name="contested", description="Categories with the most WR flips")
-    async def contested_command(self, interaction: discord.Interaction):
+    @app_commands.describe(
+        game_mode="Optional game mode filter",
+        apple_amount="Optional apple count filter",
+        speed="Optional speed filter",
+        size="Optional size filter",
+        run_mode="Optional run mode filter",
+    )
+    @app_commands.autocomplete(
+        game_mode=record_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+        run_mode=record_run_mode_autocomplete,
+    )
+    async def contested_command(
+        self,
+        interaction: discord.Interaction,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+    ):
         await interaction.response.defer()
         try:
-            items = await github_cache_fetcher.get_contested()
+            filters = dict(
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+                run_mode=run_mode,
+            )
+            filter_label = self._format_category_filters(**filters)
+            items = await self._get_contested_items(**filters)
             if items is None:
                 await interaction.followup.send("❌ Contested categories data unavailable.")
                 return
             if not items:
-                await interaction.followup.send("❌ No contested category data found.")
+                suffix = f" for `{filter_label}`" if filter_label else ""
+                await interaction.followup.send(f"❌ No contested category data found{suffix}.")
                 return
 
-            embed = self.create_contested_embed(items, page=0)
+            embed = self.create_contested_embed(items, page=0, filter_label=filter_label)
             total_pages = max(1, (len(items) + 7) // 8)
             if total_pages > 1:
                 view = ListPaginationView(
                     interaction.user.id,
                     total_pages,
-                    lambda page: self.create_contested_embed(items, page),
+                    lambda page: self.create_contested_embed(items, page, filter_label),
                 )
                 await interaction.followup.send(embed=embed, view=view)
             else:
@@ -2000,24 +2322,55 @@ class FastSnakeStats(commands.Cog):
             await interaction.followup.send("❌ An error occurred while fetching contested categories.")
 
     @app_commands.command(name="popularity", description="Categories with the most unique WR holders")
-    async def popularity_command(self, interaction: discord.Interaction):
+    @app_commands.describe(
+        game_mode="Optional game mode filter",
+        apple_amount="Optional apple count filter",
+        speed="Optional speed filter",
+        size="Optional size filter",
+        run_mode="Optional run mode filter",
+    )
+    @app_commands.autocomplete(
+        game_mode=record_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+        run_mode=record_run_mode_autocomplete,
+    )
+    async def popularity_command(
+        self,
+        interaction: discord.Interaction,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+    ):
         await interaction.response.defer()
         try:
-            items = await github_cache_fetcher.get_popularity()
+            filters = dict(
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+                run_mode=run_mode,
+            )
+            filter_label = self._format_category_filters(**filters)
+            items = await self._get_popularity_items(**filters)
             if items is None:
                 await interaction.followup.send("❌ Popularity data unavailable.")
                 return
             if not items:
-                await interaction.followup.send("❌ No popularity data found.")
+                suffix = f" for `{filter_label}`" if filter_label else ""
+                await interaction.followup.send(f"❌ No popularity data found{suffix}.")
                 return
 
-            embed = self.create_popularity_embed(items, page=0)
+            embed = self.create_popularity_embed(items, page=0, filter_label=filter_label)
             total_pages = max(1, (len(items) + 7) // 8)
             if total_pages > 1:
                 view = ListPaginationView(
                     interaction.user.id,
                     total_pages,
-                    lambda page: self.create_popularity_embed(items, page),
+                    lambda page: self.create_popularity_embed(items, page, filter_label),
                 )
                 await interaction.followup.send(embed=embed, view=view)
             else:
@@ -2030,24 +2383,55 @@ class FastSnakeStats(commands.Cog):
         name="stale",
         description="Least-flipped / longest-unchanged held categories",
     )
-    async def stale_command(self, interaction: discord.Interaction):
+    @app_commands.describe(
+        game_mode="Optional game mode filter",
+        apple_amount="Optional apple count filter",
+        speed="Optional speed filter",
+        size="Optional size filter",
+        run_mode="Optional run mode filter",
+    )
+    @app_commands.autocomplete(
+        game_mode=record_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+        run_mode=record_run_mode_autocomplete,
+    )
+    async def stale_command(
+        self,
+        interaction: discord.Interaction,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+    ):
         await interaction.response.defer()
         try:
-            items = await github_cache_fetcher.get_stale()
+            filters = dict(
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+                run_mode=run_mode,
+            )
+            filter_label = self._format_category_filters(**filters)
+            items = await self._get_stale_items(**filters)
             if items is None:
                 await interaction.followup.send("❌ Stale categories data unavailable.")
                 return
             if not items:
-                await interaction.followup.send("❌ No stale category data found.")
+                suffix = f" for `{filter_label}`" if filter_label else ""
+                await interaction.followup.send(f"❌ No stale category data found{suffix}.")
                 return
 
-            embed = self.create_stale_embed(items, page=0)
+            embed = self.create_stale_embed(items, page=0, filter_label=filter_label)
             total_pages = max(1, (len(items) + 7) // 8)
             if total_pages > 1:
                 view = ListPaginationView(
                     interaction.user.id,
                     total_pages,
-                    lambda page: self.create_stale_embed(items, page),
+                    lambda page: self.create_stale_embed(items, page, filter_label),
                 )
                 await interaction.followup.send(embed=embed, view=view)
             else:
@@ -2120,7 +2504,14 @@ class FastSnakeStats(commands.Cog):
         name="unheld",
         description="Never-held categories, easiest first",
     )
-    @app_commands.describe(tier="Optional difficulty tier filter")
+    @app_commands.describe(
+        tier="Optional difficulty tier filter",
+        game_mode="Optional game mode filter",
+        apple_amount="Optional apple count filter",
+        speed="Optional speed filter",
+        size="Optional size filter",
+        run_mode="Optional run mode filter",
+    )
     @app_commands.choices(tier=[
         app_commands.Choice(name="Free", value="Free"),
         app_commands.Choice(name="Warmup", value="Warmup"),
@@ -2131,10 +2522,22 @@ class FastSnakeStats(commands.Cog):
         app_commands.Choice(name="Lottery", value="Lottery"),
         app_commands.Choice(name="Inhuman", value="Inhuman"),
     ])
+    @app_commands.autocomplete(
+        game_mode=record_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+        run_mode=record_run_mode_autocomplete,
+    )
     async def unheld_command(
         self,
         interaction: discord.Interaction,
         tier: Optional[app_commands.Choice[str]] = None,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
     ):
         await interaction.response.defer()
         try:
@@ -2157,13 +2560,30 @@ class FastSnakeStats(commands.Cog):
             if unheld_data is None:
                 await interaction.followup.send("❌ Unheld categories data unavailable.")
                 return
-            if not unheld_data.get('rows'):
-                label = tier_value or "any tier"
+
+            filters = dict(
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+                run_mode=run_mode,
+            )
+            filter_label = self._format_category_filters(**filters)
+            rows = self._filter_category_rows(unheld_data.get('rows') or [], **filters)
+            unheld_data = {
+                **unheld_data,
+                'rows': rows,
+                'shown': len(rows),
+                'filter_label': filter_label,
+            }
+            if not rows:
+                bits = [b for b in (tier_value, filter_label) if b]
+                label = " • ".join(bits) if bits else "any filter"
                 await interaction.followup.send(f"❌ No unheld categories found for {label}.")
                 return
 
             embed = self.create_unheld_embed(unheld_data, page=0)
-            total_pages = max(1, (len(unheld_data['rows']) + 7) // 8)
+            total_pages = max(1, (len(rows) + 7) // 8)
             if total_pages > 1:
                 view = ListPaginationView(
                     interaction.user.id,

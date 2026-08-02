@@ -152,14 +152,14 @@ def clear_context():
         - /monthly - Monthly oldest-records update (optional YYYY-MM with complete FastSnakeStats months)
         - /random - Random challenge settings combination
         - /progression - WR change timeline for a category
-        - /longevity - Longest-held world records (still standing or all-time)
+        - /longevity - Longest-held world records (still standing or all-time; optional category filters)
         - /improving - Players gaining the most WRs over 7d/30d/90d/365d
-        - /contested - Categories with the most WR flips
-        - /popularity - Categories with the most unique historical holders
-        - /stale - Least-flipped / longest-unchanged held categories
+        - /contested - Categories with the most WR flips (optional category filters)
+        - /popularity - Categories with the most unique historical holders (optional category filters)
+        - /stale - Least-flipped / longest-unchanged held categories (optional category filters)
         - /unicorns - Lottery-tier unicorn category holds
         - /legends - Mythic-tier legend category holds
-        - /unheld - Never-held categories, easiest first (optional difficulty tier)
+        - /unheld - Never-held categories, easiest first (optional difficulty tier + category filters)
         - /activity - Yearly WR flips / new-WR activity summary
 
         I can help users look up world records, player statistics, historical data, and statistics-explorer analytics from the FastSnakeStats database. Commands that take a date support optional historical date parameters to view past snapshots.
