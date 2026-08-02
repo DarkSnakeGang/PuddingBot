@@ -840,13 +840,13 @@ class FastSnakeStats(commands.Cog):
         lines = []
         for i, item in enumerate(page_items, start + 1):
             category = item.get('category', '')
-            run_mode = category.split('|')[4] if '|' in category else ''
-            display_time = self._format_explorer_time(item.get('time', ''), run_mode)
             standing = " • still standing" if item.get('stillStanding') else ""
+            end_label = "present" if item.get('stillStanding') else item.get('end', '?')
             lines.append(
                 f"{i}. **{item.get('days', '?')} days** — **{item.get('playerName', 'Unknown')}** — "
                 f"{self._format_category_line(category)} — "
-                f"{display_time} • {item.get('start', '?')} → {item.get('end', '?')}{standing}"
+                f"{self._format_linked_hold_time(item)} • "
+                f"{item.get('start', '?')} → {end_label}{standing}"
             )
         embed.add_field(
             name="Holders",
@@ -855,6 +855,16 @@ class FastSnakeStats(commands.Cog):
         )
         embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
         return embed
+
+    def _format_linked_hold_time(self, item: Dict) -> str:
+        """Format hold time, linking to the SRC run when a weblink is present."""
+        category = item.get('category', '')
+        run_mode = category.split('|')[4] if '|' in category else ''
+        display_time = self._format_explorer_time(item.get('time', ''), run_mode)
+        link = item.get('weblink')
+        if link and display_time and display_time != 'N/A':
+            return f"[{display_time}]({link})"
+        return display_time
 
     def create_improving_embed(self, items: List[Dict], window: str, page: int = 0) -> discord.Embed:
         items_per_page = 10
@@ -966,17 +976,14 @@ class FastSnakeStats(commands.Cog):
         return embed
 
     def _format_achievement_hold_line(self, index: int, item: Dict) -> str:
-        category = item.get('category', '')
-        run_mode = category.split('|')[4] if '|' in category else ''
-        display_time = self._format_explorer_time(item.get('time', ''), run_mode)
+        display_time = self._format_linked_hold_time(item)
         standing = " • still standing" if item.get('stillStanding') else ""
-        link = item.get('weblink')
-        link_text = f" • [View]({link})" if link else ""
+        end_label = "present" if item.get('stillStanding') else item.get('end', '?')
         return (
             f"{index}. **{item.get('playerName', 'Unknown')}** — "
-            f"{self._format_category_line(category)} — "
+            f"{self._format_category_line(item.get('category', ''))} — "
             f"**{item.get('days', '?')}** days • {display_time} • "
-            f"{item.get('start', '?')} → {item.get('end', '?')}{standing}{link_text}"
+            f"{item.get('start', '?')} → {end_label}{standing}"
         )
 
     def create_unicorns_embed(self, items: List[Dict], page: int = 0) -> discord.Embed:
