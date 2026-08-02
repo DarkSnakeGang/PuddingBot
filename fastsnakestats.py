@@ -3,6 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 from typing import Optional, Dict, List
 import asyncio
+import os
 from datetime import datetime
 
 from github_cache_fetcher import github_cache_fetcher
@@ -1583,8 +1584,9 @@ class FastSnakeStats(commands.Cog):
         try:
             tier_value = tier.value if tier else None
             if tier_value == "Free":
+                gif_path = os.path.join(os.path.dirname(__file__), "assets", "unheld_free.gif")
                 await interaction.followup.send(
-                    "https://media.tenor.com/zOQEpnAIDz0AAAPo/google-snake-google-snake-players.mp4"
+                    file=discord.File(gif_path, filename="unheld_free.gif")
                 )
                 return
 
