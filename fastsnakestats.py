@@ -935,6 +935,73 @@ class FastSnakeStats(commands.Cog):
         embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
         return embed
 
+    def create_stale_embed(self, items: List[Dict], page: int = 0) -> discord.Embed:
+        items_per_page = 8
+        total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_items = items[start:start + items_per_page]
+
+        embed = discord.Embed(
+            title="🧊 Stalest Categories",
+            color=0x95a5a6,
+            timestamp=datetime.now()
+        )
+        lines = []
+        for i, item in enumerate(page_items, start + 1):
+            hold_start = item.get('holdStart')
+            since = f" • since {hold_start}" if hold_start else ""
+            lines.append(
+                f"{i}. {self._format_category_line(item.get('category', ''))} — "
+                f"**{item.get('holdDays', 0)}** days held • "
+                f"**{item.get('flips', 0)}** flips • "
+                f"**{item.get('uniqueHolders', 0)}** holders{since}"
+            )
+        embed.add_field(
+            name="Least Activity",
+            value="\n".join(lines) if lines else "No stale data.",
+            inline=False
+        )
+        embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
+        return embed
+
+    def create_unheld_embed(self, unheld_data: Dict, page: int = 0) -> discord.Embed:
+        items = unheld_data.get('rows') or []
+        items_per_page = 8
+        total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_items = items[start:start + items_per_page]
+        tier = unheld_data.get('tier')
+        title = f"🕳️ Unheld Categories — {tier}" if tier else "🕳️ Unheld Categories"
+
+        embed = discord.Embed(
+            title=title,
+            description="Never-held categories, easiest first",
+            color=0x34495e,
+            timestamp=datetime.now()
+        )
+        lines = []
+        for i, item in enumerate(page_items, start + 1):
+            score = item.get('score')
+            score_text = f" (score {score})" if score is not None else ""
+            lines.append(
+                f"{i}. {self._format_category_line(item.get('category', ''))} — "
+                f"**{item.get('tier', '?')}**{score_text}"
+            )
+        embed.add_field(
+            name="Open Categories",
+            value="\n".join(lines) if lines else "No unheld categories for this filter.",
+            inline=False
+        )
+        shown = unheld_data.get('shown', len(items))
+        total = unheld_data.get('total', shown)
+        embed.set_footer(
+            text=(
+                f"Data from FastSnakeStats • {shown} shown · {total} unheld total "
+                f"• Page {page + 1}/{total_pages}"
+            )
+        )
+        return embed
+
     def create_activity_embed(self, year: str, summary: Dict) -> discord.Embed:
         embed = discord.Embed(
             title=f"📅 Activity — {year}",
@@ -1461,6 +1528,83 @@ class FastSnakeStats(commands.Cog):
         except Exception as e:
             print(f"Error in popularity command: {e}")
             await interaction.followup.send("❌ An error occurred while fetching popularity data.")
+
+    @app_commands.command(
+        name="stale",
+        description="Least-flipped / longest-unchanged held categories",
+    )
+    async def stale_command(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        try:
+            items = await github_cache_fetcher.get_stale()
+            if items is None:
+                await interaction.followup.send("❌ Stale categories data unavailable.")
+                return
+            if not items:
+                await interaction.followup.send("❌ No stale category data found.")
+                return
+
+            embed = self.create_stale_embed(items, page=0)
+            total_pages = max(1, (len(items) + 7) // 8)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_stale_embed(items, page),
+                )
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in stale command: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching stale categories.")
+
+    @app_commands.command(
+        name="unheld",
+        description="Never-held categories, easiest first",
+    )
+    @app_commands.describe(tier="Optional difficulty tier filter")
+    @app_commands.choices(tier=[
+        app_commands.Choice(name="Free", value="Free"),
+        app_commands.Choice(name="Warmup", value="Warmup"),
+        app_commands.Choice(name="Easy", value="Easy"),
+        app_commands.Choice(name="Medium", value="Medium"),
+        app_commands.Choice(name="Hard", value="Hard"),
+        app_commands.Choice(name="Mythic", value="Mythic"),
+        app_commands.Choice(name="Lottery", value="Lottery"),
+        app_commands.Choice(name="Inhuman", value="Inhuman"),
+    ])
+    async def unheld_command(
+        self,
+        interaction: discord.Interaction,
+        tier: Optional[app_commands.Choice[str]] = None,
+    ):
+        await interaction.response.defer()
+        try:
+            tier_value = tier.value if tier else None
+            unheld_data = await github_cache_fetcher.get_unheld(tier_value)
+            if unheld_data is None:
+                await interaction.followup.send("❌ Unheld categories data unavailable.")
+                return
+            if not unheld_data.get('rows'):
+                label = tier_value or "any tier"
+                await interaction.followup.send(f"❌ No unheld categories found for {label}.")
+                return
+
+            embed = self.create_unheld_embed(unheld_data, page=0)
+            total_pages = max(1, (len(unheld_data['rows']) + 7) // 8)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_unheld_embed(unheld_data, page),
+                )
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in unheld command: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching unheld categories.")
 
     @app_commands.command(name="activity", description="Yearly WR activity summary from FastSnakeStats")
     @app_commands.describe(year="Year to summarize (defaults to latest)")

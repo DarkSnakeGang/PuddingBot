@@ -273,6 +273,32 @@ class GitHubCacheFetcher:
             return None
         return data.get('popularity') or []
 
+    async def get_stale(self) -> Optional[List[Dict]]:
+        """Get least-flipped / stalest held categories."""
+        data = await self.fetch_statistics_explorer()
+        if not data:
+            return None
+        return data.get('stale') or []
+
+    async def get_unheld(self, tier: Optional[str] = None) -> Optional[Dict]:
+        """Get never-held categories (optional difficulty tier filter)."""
+        data = await self.fetch_statistics_explorer()
+        if not data or not data.get('unheld'):
+            return None
+
+        unheld = data['unheld']
+        rows = list(unheld.get('rows') or [])
+        if tier:
+            rows = [row for row in rows if (row.get('tier') or '') == tier]
+
+        return {
+            'tiers': unheld.get('tiers') or [],
+            'total': unheld.get('total', len(unheld.get('rows') or [])),
+            'shown': len(rows),
+            'tier': tier,
+            'rows': rows,
+        }
+
     async def get_activity_heatmap(self) -> Optional[List[Dict]]:
         """Get daily activity heatmap entries."""
         data = await self.fetch_statistics_explorer()

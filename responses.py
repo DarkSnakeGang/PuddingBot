@@ -155,6 +155,8 @@ def clear_context():
         - /improving - Players gaining the most WRs over 7d/30d/90d/365d
         - /contested - Categories with the most WR flips
         - /popularity - Categories with the most unique historical holders
+        - /stale - Least-flipped / longest-unchanged held categories
+        - /unheld - Never-held categories, easiest first (optional difficulty tier)
         - /activity - Yearly WR flips / new-WR activity summary
 
         I can help users look up world records, player statistics, historical data, and statistics-explorer analytics from the FastSnakeStats database. Commands that take a date support optional historical date parameters to view past snapshots.
