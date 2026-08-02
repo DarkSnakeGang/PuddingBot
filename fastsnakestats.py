@@ -1582,6 +1582,12 @@ class FastSnakeStats(commands.Cog):
         await interaction.response.defer()
         try:
             tier_value = tier.value if tier else None
+            if tier_value == "Free":
+                await interaction.followup.send(
+                    "https://media.tenor.com/zOQEpnAIDz0AAAPo/google-snake-google-snake-players.mp4"
+                )
+                return
+
             unheld_data = await github_cache_fetcher.get_unheld(tier_value)
             if unheld_data is None:
                 await interaction.followup.send("❌ Unheld categories data unavailable.")
