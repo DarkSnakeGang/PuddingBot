@@ -13,8 +13,10 @@ import data_management as dm
 
 # google-snake channel (snake emoji) — https://discord.com/channels/723093146954760222/723093815786864661
 GOOGLE_SNAKE_CHANNEL_ID = int(os.getenv("GOOGLE_SNAKE_CHANNEL_ID", "723093815786864661"))
-# Matches daih's "June 2021 or before" oldest-list cutoff
-OLD_RECORD_CUTOFF = os.getenv("OLD_RECORD_CUTOFF", "2021-06-30")
+# Minimum hold age (days) to count as an "oldest records" beat
+MIN_OLDEST_HOLD_DAYS = int(os.getenv("MIN_OLDEST_HOLD_DAYS", "365"))
+# How many longest beaten holds to highlight in the monthly post
+MONTHLY_BEATEN_LIMIT = int(os.getenv("MONTHLY_BEATEN_LIMIT", "10"))
 # Noon local for the scheduled post (default UTC+3)
 _MONTHLY_UTC_OFFSET = int(os.getenv("MONTHLY_REPORT_UTC_OFFSET", "3"))
 MONTHLY_REPORT_TZ = timezone(timedelta(hours=_MONTHLY_UTC_OFFSET))
@@ -337,10 +339,16 @@ class FastSnakeStats(commands.Cog):
             return 0
 
     async def get_monthly_oldest_report_data(self) -> Optional[Dict]:
-        """Oldest-list update: longstanding holds beaten last month + current oldest."""
+        """Build the monthly oldest-records report purely from FastSnakeStats.
+
+        Uses only statistics-explorer.json (progression + longevity) from the
+        FastSnakeStats GitHub cache — no Discord message history or manual lists.
+        Computed on the fly each time /monthly or the scheduled post runs.
+        """
         try:
             period_start, period_end, period_label = self._previous_calendar_month_bounds()
-            explorer = await github_cache_fetcher.fetch_statistics_explorer()
+            # Always pull fresh explorer data so the report is self-contained
+            explorer = await github_cache_fetcher.fetch_statistics_explorer(force_refresh=True)
             if not explorer:
                 return None
 
@@ -356,7 +364,8 @@ class FastSnakeStats(commands.Cog):
                         continue
                     if end < period_start or end > period_end:
                         continue
-                    if start > OLD_RECORD_CUTOFF:
+                    days = self._hold_day_count(start, end)
+                    if days < MIN_OLDEST_HOLD_DAYS:
                         continue
                     beaten.append({
                         "category": category,
@@ -364,7 +373,7 @@ class FastSnakeStats(commands.Cog):
                         "new_player": flips[i + 1].get("n") or "Unknown",
                         "start": start,
                         "end": end,
-                        "days": self._hold_day_count(start, end),
+                        "days": days,
                         "duration": self._format_hold_duration(start, end),
                         "old_time": flips[i].get("t") or "",
                         "new_time": flips[i + 1].get("t") or "",
@@ -373,20 +382,23 @@ class FastSnakeStats(commands.Cog):
                     })
 
             beaten.sort(key=lambda item: (-item["days"], item["end"]))
+            total_beaten = len(beaten)
+            beaten = beaten[:MONTHLY_BEATEN_LIMIT]
 
             longevity = explorer.get("longevity") or {}
             standing = longevity.get("standing") or []
             all_time = longevity.get("all") or []
             remaining_old = sum(
-                1 for item in standing if (item.get("start") or "") <= OLD_RECORD_CUTOFF
+                1 for item in standing if int(item.get("days") or 0) >= MIN_OLDEST_HOLD_DAYS
             )
 
             return {
                 "period_start": period_start,
                 "period_end": period_end,
                 "period_label": period_label,
-                "cutoff": OLD_RECORD_CUTOFF,
+                "min_days": MIN_OLDEST_HOLD_DAYS,
                 "beaten": beaten,
+                "total_beaten": total_beaten,
                 "remaining_old": remaining_old,
                 "oldest_top": all_time[:10],
                 "standing_count": len(standing),
@@ -401,24 +413,29 @@ class FastSnakeStats(commands.Cog):
         items_per_page = 3
         total_pages = max(1, (len(beaten) + items_per_page - 1) // items_per_page)
         page = max(0, min(page, total_pages - 1))
+        min_days = report_data.get("min_days", MIN_OLDEST_HOLD_DAYS)
+        total_beaten = report_data.get("total_beaten", len(beaten))
 
         embed = discord.Embed(
             title=f"📅 Monthly Oldest Records — {report_data['period_label']}",
             description=(
-                f"Longstanding holds that began on or before **{report_data['cutoff']}** "
-                f"and were beaten between **{report_data['period_start']}** and "
-                f"**{report_data['period_end']}**."
+                f"The longest-standing records beaten between "
+                f"**{report_data['period_start']}** and **{report_data['period_end']}** "
+                f"(holds of **{min_days}+** days)."
             ),
             color=0xe67e22,
             timestamp=datetime.now(),
         )
+        shown_note = ""
+        if total_beaten > len(beaten):
+            shown_note = f"\nShowing the **{len(beaten)}** longest of **{total_beaten}**"
         embed.add_field(
             name="📊 Summary",
             value=(
-                f"**{len(beaten)}** oldest-list record"
-                f"{'' if len(beaten) == 1 else 's'} beaten\n"
-                f"**{report_data['remaining_old']}** still standing from "
-                f"June 2021 or earlier"
+                f"**{total_beaten}** record"
+                f"{'' if total_beaten == 1 else 's'} over a year old beaten"
+                f"{shown_note}\n"
+                f"**{report_data['remaining_old']}** holds of {min_days}+ days still standing"
             ),
             inline=False,
         )
@@ -426,7 +443,7 @@ class FastSnakeStats(commands.Cog):
         if not beaten:
             embed.add_field(
                 name="🏆 Beaten Holds",
-                value="No June-2021-or-earlier holds fell this month. The legends still stand.",
+                value=f"No holds of {min_days}+ days fell this month.",
                 inline=False,
             )
         else:
