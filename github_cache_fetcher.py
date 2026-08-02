@@ -280,6 +280,20 @@ class GitHubCacheFetcher:
             return None
         return data.get('stale') or []
 
+    async def get_unicorns(self) -> Optional[List[Dict]]:
+        """Get Lottery-tier unicorn holds (present and past)."""
+        data = await self.fetch_statistics_explorer()
+        if not data:
+            return None
+        return data.get('unicorns') or []
+
+    async def get_legends(self) -> Optional[List[Dict]]:
+        """Get Mythic-tier legend holds (present and past)."""
+        data = await self.fetch_statistics_explorer()
+        if not data:
+            return None
+        return data.get('legends') or []
+
     async def get_unheld(self, tier: Optional[str] = None) -> Optional[Dict]:
         """Get never-held categories (optional difficulty tier filter)."""
         data = await self.fetch_statistics_explorer()

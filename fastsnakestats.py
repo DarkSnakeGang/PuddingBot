@@ -965,6 +965,68 @@ class FastSnakeStats(commands.Cog):
         embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
         return embed
 
+    def _format_achievement_hold_line(self, index: int, item: Dict) -> str:
+        category = item.get('category', '')
+        run_mode = category.split('|')[4] if '|' in category else ''
+        display_time = self._format_explorer_time(item.get('time', ''), run_mode)
+        standing = " • still standing" if item.get('stillStanding') else ""
+        link = item.get('weblink')
+        link_text = f" • [View]({link})" if link else ""
+        return (
+            f"{index}. **{item.get('playerName', 'Unknown')}** — "
+            f"{self._format_category_line(category)}\n"
+            f"   **{item.get('days', '?')}** days • {display_time} • "
+            f"{item.get('start', '?')} → {item.get('end', '?')}{standing}{link_text}"
+        )
+
+    def create_unicorns_embed(self, items: List[Dict], page: int = 0) -> discord.Embed:
+        items_per_page = 5
+        total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_items = items[start:start + items_per_page]
+
+        embed = discord.Embed(
+            title="🦄 Unicorns — Lottery Holds",
+            description="Lottery-tier category holds (still standing first)",
+            color=0xe91e63,
+            timestamp=datetime.now()
+        )
+        lines = [
+            self._format_achievement_hold_line(i, item)
+            for i, item in enumerate(page_items, start + 1)
+        ]
+        embed.add_field(
+            name="Holders",
+            value="\n".join(lines) if lines else "No unicorn data.",
+            inline=False
+        )
+        embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
+        return embed
+
+    def create_legends_embed(self, items: List[Dict], page: int = 0) -> discord.Embed:
+        items_per_page = 5
+        total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_items = items[start:start + items_per_page]
+
+        embed = discord.Embed(
+            title="🏆 Legends — Mythic Holds",
+            description="Mythic-tier category holds (hardest first)",
+            color=0x9b59b6,
+            timestamp=datetime.now()
+        )
+        lines = [
+            self._format_achievement_hold_line(i, item)
+            for i, item in enumerate(page_items, start + 1)
+        ]
+        embed.add_field(
+            name="Holders",
+            value="\n".join(lines) if lines else "No legend data.",
+            inline=False
+        )
+        embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
+        return embed
+
     def create_unheld_embed(self, unheld_data: Dict, page: int = 0) -> discord.Embed:
         items = unheld_data.get('rows') or []
         items_per_page = 8
@@ -1559,6 +1621,66 @@ class FastSnakeStats(commands.Cog):
         except Exception as e:
             print(f"Error in stale command: {e}")
             await interaction.followup.send("❌ An error occurred while fetching stale categories.")
+
+    @app_commands.command(
+        name="unicorns",
+        description="Lottery-tier unicorn category holds",
+    )
+    async def unicorns_command(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        try:
+            items = await github_cache_fetcher.get_unicorns()
+            if items is None:
+                await interaction.followup.send("❌ Unicorns data unavailable.")
+                return
+            if not items:
+                await interaction.followup.send("❌ No unicorn holds found.")
+                return
+
+            embed = self.create_unicorns_embed(items, page=0)
+            total_pages = max(1, (len(items) + 4) // 5)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_unicorns_embed(items, page),
+                )
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in unicorns command: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching unicorns.")
+
+    @app_commands.command(
+        name="legends",
+        description="Mythic-tier legend category holds",
+    )
+    async def legends_command(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        try:
+            items = await github_cache_fetcher.get_legends()
+            if items is None:
+                await interaction.followup.send("❌ Legends data unavailable.")
+                return
+            if not items:
+                await interaction.followup.send("❌ No legend holds found.")
+                return
+
+            embed = self.create_legends_embed(items, page=0)
+            total_pages = max(1, (len(items) + 4) // 5)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_legends_embed(items, page),
+                )
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in legends command: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching legends.")
 
     @app_commands.command(
         name="unheld",

@@ -156,6 +156,8 @@ def clear_context():
         - /contested - Categories with the most WR flips
         - /popularity - Categories with the most unique historical holders
         - /stale - Least-flipped / longest-unchanged held categories
+        - /unicorns - Lottery-tier unicorn category holds
+        - /legends - Mythic-tier legend category holds
         - /unheld - Never-held categories, easiest first (optional difficulty tier)
         - /activity - Yearly WR flips / new-WR activity summary
 
