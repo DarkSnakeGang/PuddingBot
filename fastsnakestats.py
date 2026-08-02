@@ -843,9 +843,9 @@ class FastSnakeStats(commands.Cog):
             display_time = self._format_explorer_time(item.get('time', ''), run_mode)
             standing = " • still standing" if item.get('stillStanding') else ""
             lines.append(
-                f"{i}. **{item.get('days', '?')} days** — **{item.get('playerName', 'Unknown')}**\n"
-                f"   {self._format_category_line(category)}\n"
-                f"   {display_time} • {item.get('start', '?')} → {item.get('end', '?')}{standing}"
+                f"{i}. **{item.get('days', '?')} days** — **{item.get('playerName', 'Unknown')}** — "
+                f"{self._format_category_line(category)} — "
+                f"{display_time} • {item.get('start', '?')} → {item.get('end', '?')}{standing}"
             )
         embed.add_field(
             name="Holders",
@@ -895,8 +895,8 @@ class FastSnakeStats(commands.Cog):
         lines = []
         for i, item in enumerate(page_items, start + 1):
             lines.append(
-                f"{i}. {self._format_category_line(item.get('category', ''))}\n"
-                f"   **{item.get('flips', 0)}** flips • "
+                f"{i}. {self._format_category_line(item.get('category', ''))} — "
+                f"**{item.get('flips', 0)}** flips • "
                 f"**{item.get('uniqueHolders', 0)}** holders • "
                 f"{item.get('daysWithRecord', 0)} days"
             )
@@ -922,8 +922,8 @@ class FastSnakeStats(commands.Cog):
         lines = []
         for i, item in enumerate(page_items, start + 1):
             lines.append(
-                f"{i}. {self._format_category_line(item.get('category', ''))}\n"
-                f"   **{item.get('uniqueHolders', 0)}** unique holders • "
+                f"{i}. {self._format_category_line(item.get('category', ''))} — "
+                f"**{item.get('uniqueHolders', 0)}** unique holders • "
                 f"**{item.get('flips', 0)}** flips • "
                 f"{item.get('daysWithRecord', 0)} days"
             )
