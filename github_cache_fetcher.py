@@ -1,3 +1,4 @@
+import os
 import requests
 import json
 from typing import Optional, Dict, List, Any
@@ -12,6 +13,15 @@ class GitHubCacheFetcher:
         self.metadata_url = f"{self.base_url}/time-travel-cache/metadata/available-dates.json"
         self.player_stats_url = f"{self.base_url}/time-travel-cache/metadata/player-stats.json"
         self.statistics_explorer_url = f"{self.base_url}/time-travel-cache/metadata/statistics-explorer.json"
+        # Sibling FastSnakeStats checkout (analyzer v11+ has career) used when GitHub lags
+        self._local_statistics_explorer_path = os.path.normpath(os.path.join(
+            os.path.dirname(__file__),
+            '..',
+            'FastSnakeStats',
+            'time-travel-cache',
+            'metadata',
+            'statistics-explorer.json',
+        ))
         self.fallback_to_api = True
         self._player_stats_cache: Optional[Dict] = None
         self._player_stats_cache_fetched_at: Optional[datetime] = None
@@ -259,9 +269,17 @@ class GitHubCacheFetcher:
     async def get_player_longevity_best(
         self, player_id: Optional[str] = None, player_name: Optional[str] = None
     ) -> Optional[Dict]:
-        """Best all-time and still-standing holds for a player from progression."""
+        """Best all-time and still-standing holds for a player."""
         if not player_id and not player_name:
             return None
+
+        career = await self.get_player_career(player_id=player_id, player_name=player_name)
+        if career and (career.get('bestAll') or career.get('bestStanding')):
+            return {
+                'allTime': career.get('bestAll'),
+                'standing': career.get('bestStanding'),
+            }
+
         explorer = await self.fetch_statistics_explorer()
         if not explorer:
             return None
@@ -327,6 +345,27 @@ class GitHubCacheFetcher:
 
         return {'allTime': best_all, 'standing': best_standing}
 
+    async def get_player_career(
+        self, player_id: Optional[str] = None, player_name: Optional[str] = None
+    ) -> Optional[Dict]:
+        """Look up explorer career row for a player (WR-days, holds, best longevity)."""
+        if not player_id and not player_name:
+            return None
+        explorer = await self.fetch_statistics_explorer()
+        if not explorer:
+            return None
+        rows = explorer.get('career') or []
+        if not rows:
+            return None
+
+        name_lower = (player_name or '').lower().strip()
+        for row in rows:
+            if player_id and row.get('playerId') == player_id:
+                return row
+            if name_lower and (row.get('playerName') or '').lower() == name_lower:
+                return row
+        return None
+
     async def get_player_improving(
         self, player_id: Optional[str] = None, player_name: Optional[str] = None
     ) -> Optional[Dict[str, Dict]]:
@@ -349,6 +388,35 @@ class GitHubCacheFetcher:
                     break
         return found or None
 
+    def _load_local_statistics_explorer(self) -> Optional[Dict]:
+        """Load sibling FastSnakeStats explorer JSON when present."""
+        path = self._local_statistics_explorer_path
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path, 'r', encoding='utf-8') as handle:
+                return json.load(handle)
+        except Exception as error:
+            print(f'Error reading local statistics explorer: {error}')
+            return None
+
+    def _prefer_explorer_with_career(self, remote: Optional[Dict]) -> Optional[Dict]:
+        """Prefer local explorer when it has career data GitHub does not yet."""
+        local = self._load_local_statistics_explorer()
+        if not local:
+            return remote
+        local_has_career = bool(local.get('career'))
+        remote_has_career = bool(remote and remote.get('career'))
+        if local_has_career and not remote_has_career:
+            return local
+        if not remote:
+            return local
+        local_ver = ((local.get('meta') or {}).get('analyzerVersion') or 0)
+        remote_ver = ((remote.get('meta') or {}).get('analyzerVersion') or 0)
+        if local_has_career and local_ver > remote_ver:
+            return local
+        return remote
+
     async def fetch_statistics_explorer(self, force_refresh: bool = False) -> Optional[Dict]:
         """Fetch statistics-explorer metadata (cached in memory for 1 hour)."""
         try:
@@ -360,17 +428,27 @@ class GitHubCacheFetcher:
             ):
                 return self._statistics_explorer_cache
 
+            metadata = None
             response = requests.get(self.statistics_explorer_url, timeout=60)
-            if not response.ok:
-                print('Statistics explorer metadata not available')
+            if response.ok:
+                metadata = response.json()
+            else:
+                print('Statistics explorer metadata not available from GitHub')
+
+            metadata = self._prefer_explorer_with_career(metadata)
+            if metadata is None:
                 return self._statistics_explorer_cache
 
-            metadata = response.json()
             self._statistics_explorer_cache = metadata
             self._statistics_explorer_cache_fetched_at = datetime.utcnow()
             return metadata
         except Exception as error:
             print(f'Error fetching statistics explorer metadata: {error}')
+            local = self._prefer_explorer_with_career(None)
+            if local is not None:
+                self._statistics_explorer_cache = local
+                self._statistics_explorer_cache_fetched_at = datetime.utcnow()
+                return local
             return self._statistics_explorer_cache
 
     async def get_progression(self, settings_key: str) -> Optional[List[Dict]]:

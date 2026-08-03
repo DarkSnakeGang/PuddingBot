@@ -123,6 +123,9 @@ class FastSnakeStats(commands.Cog):
                 if total_world_records > 0 else 0.0
             )
 
+            career = await github_cache_fetcher.get_player_career(
+                player_id=player_id, player_name=display_name
+            )
             longevity_best = await github_cache_fetcher.get_player_longevity_best(
                 player_id=player_id, player_name=display_name
             )
@@ -131,7 +134,7 @@ class FastSnakeStats(commands.Cog):
             )
 
             if not player_records:
-                if not peak_stats:
+                if not peak_stats and not career:
                     return None
                 return {
                     'player_name': display_name,
@@ -141,6 +144,7 @@ class FastSnakeStats(commands.Cog):
                     'recent_activity': [],
                     'date': snapshot_date,
                     'peak_stats': peak_stats,
+                    'career': career,
                     'longevity_best': longevity_best,
                     'improving': improving,
                 }
@@ -156,6 +160,7 @@ class FastSnakeStats(commands.Cog):
                 'recent_activity': player_records,
                 'date': snapshot_date,
                 'peak_stats': peak_stats,
+                'career': career,
                 'longevity_best': longevity_best,
                 'improving': improving,
             }
@@ -951,16 +956,26 @@ class FastSnakeStats(commands.Cog):
         
         return embed
     
-    def _format_player_career_stats(self, peak_stats: Optional[Dict]) -> str:
-        if not peak_stats:
-            return "No career metadata available."
-        total_records = peak_stats.get('totalRecords')
-        total_dates = peak_stats.get('totalDates')
+    def _format_player_career_stats(
+        self, peak_stats: Optional[Dict], career: Optional[Dict] = None
+    ) -> str:
+        """Match FastSnakeStats search-player career summary."""
         lines = []
+        total_dates = (peak_stats or {}).get('totalDates')
+        total_records = (peak_stats or {}).get('totalRecords')
         if total_dates is not None:
-            lines.append(f"**Dates active:** {total_dates}")
+            lines.append(f"**Dates:** {total_dates}")
         if total_records is not None:
-            lines.append(f"**Career WR-days:** {total_records}")
+            lines.append(f"**Total WRs:** {total_records}")
+
+        if career:
+            if career.get('wrDays') is not None:
+                lines.append(f"**WR-days:** {career['wrDays']}")
+            if career.get('holds') is not None:
+                lines.append(f"**Holds:** {career['holds']}")
+            if career.get('standingHolds') is not None:
+                lines.append(f"**Still standing:** {career['standingHolds']}")
+
         return "\n".join(lines) if lines else "No career metadata available."
 
     def _format_player_peak_stats(self, peak_stats: Optional[Dict]) -> str:
@@ -1044,7 +1059,10 @@ class FastSnakeStats(commands.Cog):
 
         embed.add_field(
             name="📚 Career",
-            value=self._format_player_career_stats(player_data.get('peak_stats')),
+            value=self._format_player_career_stats(
+                player_data.get('peak_stats'),
+                player_data.get('career'),
+            ),
             inline=False
         )
 
