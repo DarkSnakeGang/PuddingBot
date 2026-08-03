@@ -49,6 +49,7 @@ COUNT_COUNT_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets'
 POISON_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'poison.png')
 YIN_YANG_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'yin_yang.png')
 TALLY_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'tally.png')
+SOFTLOCK_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'softlock.gif')
 
 if not TOKEN:
     raise SystemExit(
@@ -258,6 +259,17 @@ async def on_message(message: Message) -> None:
             await message.channel.send(file=File(TALLY_ASSET, filename="tally.png"))
         except Exception as e:
             print(f"Failed to send tally meme: {e}")
+
+    # 1/3 easter egg when softlock is mentioned
+    if (
+        re.search(r"\bsoftlock\b", lowered_message)
+        and random.randint(1, 3) == 1
+        and os.path.isfile(SOFTLOCK_ASSET)
+    ):
+        try:
+            await message.channel.send(file=File(SOFTLOCK_ASSET, filename="softlock.gif"))
+        except Exception as e:
+            print(f"Failed to send softlock meme: {e}")
 
     if not (user_message.lower()[:3] == 'gif' and in_poi):
         await send_message(message, user_message, message.author.id)
