@@ -150,7 +150,7 @@ def clear_context():
         - /stats - Get top record holders statistics (by number and percentage, optional date)
         - /report - Weekly report of new and changed world records
         - /monthly - Monthly oldest-records update (optional YYYY-MM with complete FastSnakeStats months)
-        - /random - Random challenge settings combination
+        - /random - Random valid challenge settings (optional tier + category filters; shows current WR)
         - /progression - WR change timeline for a category
         - /longevity - Longest-held world records (still standing or all-time; optional category filters)
         - /improving - Players gaining the most WRs over 7d/30d/90d/365d

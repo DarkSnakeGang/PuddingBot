@@ -814,27 +814,77 @@ class FastSnakeStats(commands.Cog):
     ) -> List[app_commands.Choice[str]]:
         return self._filter_setting_choices(dm.get_ordered_run_modes(), current)
     
-    def get_random_combination(self) -> Dict[str, str]:
-        """Generate a random combination of game settings"""
-        import random
-        
-        # Get all available options
-        apple_amounts = list(dm.APPLE_AMOUNTS.keys())
-        speeds = list(dm.SPEEDS.keys())
-        sizes = list(dm.SIZES.keys())
-        gamemodes = list(dm.GAMEMODES.keys())
-        run_modes = list(dm.RUN_MODES.keys())
-        
-        # Generate random combination
-        combination = {
-            'game_mode': random.choice(gamemodes),
-            'apple_amount': random.choice(apple_amounts),
-            'speed': random.choice(speeds),
-            'size': random.choice(sizes),
-            'run_mode': random.choice(run_modes)
+    def get_random_combination(
+        self,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+        tier: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Pick a random valid category, optionally filtered by settings/tier."""
+        pool = dm.filter_valid_categories(
+            game_mode=game_mode,
+            apple_amount=apple_amount,
+            speed=speed,
+            size=size,
+            run_mode=run_mode,
+            tier=tier,
+        )
+        # Hard exclude impossible boards (e.g. 100 Apples on Small)
+        filtered_pool = []
+        for key in pool:
+            parts = dm.parse_category_parts(key)
+            if not dm.is_valid_category(
+                parts["apple_amount"],
+                parts["speed"],
+                parts["size"],
+                parts["game_mode"],
+                parts["run_mode"],
+            ):
+                continue
+            filtered_pool.append(key)
+        pool = filtered_pool
+        if not pool:
+            return None
+
+        settings_key = random.choice(pool)
+        parts = dm.parse_category_parts(settings_key)
+        if parts["run_mode"] == "100 Apples" and parts["size"] == "Small":
+            return None
+        scored = dm.score_category(settings_key)
+        return {
+            "settings_key": settings_key,
+            "game_mode": parts["game_mode"],
+            "apple_amount": parts["apple_amount"],
+            "speed": parts["speed"],
+            "size": parts["size"],
+            "run_mode": parts["run_mode"],
+            "tier": scored["tier"],
+            "score": scored["score"],
         }
-        
-        return combination
+
+    async def random_size_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        options = dm.get_ordered_sizes()
+        chosen_run = getattr(interaction.namespace, "run_mode", None)
+        if chosen_run == "100 Apples":
+            options = [s for s in options if s != "Small"]
+        return self._filter_setting_choices(options, current)
+
+    async def random_run_mode_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        options = dm.get_ordered_run_modes()
+        chosen_size = getattr(interaction.namespace, "size", None)
+        chosen_mode = getattr(interaction.namespace, "game_mode", None)
+        if chosen_size == "Small":
+            options = [r for r in options if r != "100 Apples"]
+        if chosen_mode and not dm.is_high_score_mode(chosen_mode):
+            options = [r for r in options if r != "High Score"]
+        return self._filter_setting_choices(options, current)
     
     def create_record_embed(self, record_data: Dict, settings_key: str) -> discord.Embed:
         """Create a rich embed for record display"""
@@ -1972,61 +2022,130 @@ class FastSnakeStats(commands.Cog):
             print(f"Error in stats command: {e}")
             await interaction.followup.send("❌ An error occurred while fetching statistics. Please try again.")
     
-    @app_commands.command(name="random", description="Get a random combination of game settings to try")
-    async def random_command(self, interaction: discord.Interaction):
-        """Get a random combination of game settings"""
+    @app_commands.command(
+        name="random",
+        description="Random valid challenge settings (optional filters / difficulty tier)",
+    )
+    @app_commands.describe(
+        tier="Optional difficulty tier",
+        game_mode="Optional game mode filter",
+        apple_amount="Optional apple count filter",
+        speed="Optional speed filter",
+        size="Optional size filter",
+        run_mode="Optional run mode filter",
+    )
+    @app_commands.choices(tier=[
+        app_commands.Choice(name="Free", value="Free"),
+        app_commands.Choice(name="Warmup", value="Warmup"),
+        app_commands.Choice(name="Easy", value="Easy"),
+        app_commands.Choice(name="Medium", value="Medium"),
+        app_commands.Choice(name="Hard", value="Hard"),
+        app_commands.Choice(name="Mythic", value="Mythic"),
+        app_commands.Choice(name="Lottery", value="Lottery"),
+        app_commands.Choice(name="Inhuman", value="Inhuman"),
+    ])
+    @app_commands.autocomplete(
+        game_mode=record_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=random_size_autocomplete,
+        run_mode=random_run_mode_autocomplete,
+    )
+    async def random_command(
+        self,
+        interaction: discord.Interaction,
+        tier: Optional[app_commands.Choice[str]] = None,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+    ):
+        """Get a random valid combination of game settings"""
         await interaction.response.defer()
-        
         try:
-            # Generate random combination
-            combination = self.get_random_combination()
-            
-            # Create embed
+            if run_mode == "High Score" and game_mode and not dm.is_high_score_mode(game_mode):
+                await interaction.followup.send(
+                    f"❌ `{game_mode}` is not a high-score mode, so High Score runs don't exist for it."
+                )
+                return
+            if run_mode == "100 Apples" and size == "Small":
+                await interaction.followup.send(
+                    "❌ `100 Apples` on `Small` is not a valid category."
+                )
+                return
+
+            tier_value = tier.value if tier else None
+            combination = self.get_random_combination(
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+                run_mode=run_mode,
+                tier=tier_value,
+            )
+            if not combination:
+                bits = [
+                    v for v in (
+                        tier_value, game_mode, apple_amount, speed, size, run_mode
+                    ) if v
+                ]
+                label = " • ".join(bits) if bits else "those filters"
+                await interaction.followup.send(
+                    f"❌ No valid categories found for {label}."
+                )
+                return
+
+            settings_key = combination["settings_key"]
+            record_data = await self.get_record_data(
+                combination["apple_amount"],
+                combination["speed"],
+                combination["size"],
+                combination["game_mode"],
+                run_mode=combination["run_mode"],
+            )
+
             embed = discord.Embed(
                 title="🎲 Random Challenge",
-                description="Here's a random combination to try!",
-                color=0x9b59b6,  # Purple for random
-                timestamp=datetime.now()
+                description=dm.format_category_key(settings_key),
+                color=0x9b59b6,
+                timestamp=datetime.now(),
             )
-            
-            # Add the combination details
-            embed.add_field(
-                name="🎮 Game Mode",
-                value=combination['game_mode'],
-                inline=True
-            )
-            
-            embed.add_field(
-                name="🍎 Apple Amount",
-                value=combination['apple_amount'],
-                inline=True
-            )
-            
-            embed.add_field(
-                name="⚡ Speed",
-                value=combination['speed'],
-                inline=True
-            )
-            
-            embed.add_field(
-                name="📏 Size",
-                value=combination['size'],
-                inline=True
-            )
-            
-            embed.add_field(
-                name="🎯 Run Mode",
-                value=combination['run_mode'],
-                inline=True
-            )
-            
-            embed.set_footer(text="Try this combination and see how you do!")
-            
+            embed.add_field(name="🎮 Game Mode", value=combination["game_mode"], inline=True)
+            embed.add_field(name="🍎 Apple Amount", value=combination["apple_amount"], inline=True)
+            embed.add_field(name="⚡ Speed", value=combination["speed"], inline=True)
+            embed.add_field(name="📏 Size", value=combination["size"], inline=True)
+            embed.add_field(name="🎯 Run Mode", value=combination["run_mode"], inline=True)
+            embed.add_field(name="📶 Difficulty", value=combination["tier"], inline=True)
+
+            if record_data and record_data.get("run"):
+                run = record_data["run"]
+                time_str = self._format_time_for_display(
+                    dm.get_run_time(run), combination["run_mode"]
+                )
+                player = dm.get_player_name(run)
+                date = dm.get_run_date(run)
+                link = dm.get_run_link(run)
+                record_line = f"**{player}** — {time_str}"
+                if date and date != "N/A":
+                    record_line += f" • `{date}`"
+                if link:
+                    record_line += f" • [View Run]({link})"
+                embed.add_field(name="🏆 Current WR", value=record_line, inline=False)
+            else:
+                embed.add_field(
+                    name="🏆 Current WR",
+                    value="Unheld — no world record yet.",
+                    inline=False,
+                )
+
+            embed.set_footer(text="Data from FastSnakeStats • Valid categories only")
             await interaction.followup.send(embed=embed)
-            
         except Exception as e:
             print(f"Error in random command: {e}")
-            await interaction.followup.send("❌ An error occurred while generating random combination. Please try again.")
+            await interaction.followup.send(
+                "❌ An error occurred while generating a random combination."
+            )
     
     @app_commands.command(name="report", description="View weekly report of record changes and new achievements")
     async def report_command(self, interaction: discord.Interaction):

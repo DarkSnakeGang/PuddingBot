@@ -194,3 +194,273 @@ def get_ordered_gamemodes() -> list:
 def get_ordered_run_modes() -> list:
     """Get ordered list of run modes"""
     return ["25 Apples", "50 Apples", "100 Apples", "All Apples", "High Score"]
+
+
+# Modes that have a High Score leaderboard (aligned with FastSnakeStats + community FAQ)
+HIGHSCORE_MODES = frozenset({
+    "Wall", "Portal", "Key", "Sokoban", "Poison", "Minesweeper",
+    "Statue", "Shield", "Hotdog", "Gate", "Bridge",
+})
+
+DIFFICULTY_TIERS = [
+    "Free", "Warmup", "Easy", "Medium", "Hard", "Mythic", "Lottery", "Inhuman",
+]
+
+MODE_BASE_TIER = {
+    "Peaceful": "Free",
+    "Classic": "Warmup",
+    "Cheese": "Warmup",
+    "Borderless": "Warmup",
+    "Winged": "Warmup",
+    "Yin Yang": "Warmup",
+    "Magnet": "Warmup",
+    "Dimension": "Easy",
+    "Statue": "Easy",
+    "Arrow": "Easy",
+    "Light": "Easy",
+    "Wall": "Medium",
+    "Portal": "Medium",
+    "Twin": "Medium",
+    "Key": "Medium",
+    "Poison": "Medium",
+    "Minesweeper": "Medium",
+    "Shield": "Medium",
+    "Hotdog": "Medium",
+    "Sokoban": "Hard",
+    "Gate": "Hard",
+    "Bridge": "Medium",
+}
+
+_COUNT_MORE_EASIER = ["Bomb", "10 Apples", "5 Apples", "Dice", "3 Apples", "1 Apple"]
+_COUNT_LESS_EASIER = ["1 Apple", "3 Apples", "Dice", "5 Apples", "10 Apples", "Bomb"]
+_COUNT_POISON = ["1 Apple", "Dice", "3 Apples", "5 Apples", "10 Apples", "Bomb"]
+_COUNT_LESS_EASIER_MODES = frozenset({
+    "Portal", "Key", "Sokoban", "Minesweeper", "Shield", "Hotdog",
+})
+_APPLE_RUNS = ["25 Apples", "50 Apples", "100 Apples", "All Apples"]
+
+
+def is_high_score_mode(gamemode: str) -> bool:
+    """True if this mode can use the High Score run mode."""
+    return gamemode in HIGHSCORE_MODES
+
+
+def is_valid_category(
+    apple_amount: str,
+    speed: str,
+    size: str,
+    gamemode: str,
+    run_mode: str,
+) -> bool:
+    """True for combinations that exist in FastSnakeStats / SRC boards."""
+    if apple_amount not in APPLE_AMOUNTS:
+        return False
+    if speed not in SPEEDS or size not in SIZES or gamemode not in GAMEMODES:
+        return False
+    if run_mode not in RUN_MODES:
+        return False
+    # 100 Apples is not played on Small
+    if run_mode == "100 Apples" and size == "Small":
+        return False
+    # Yin Yang 50 on Small does not exist
+    if gamemode == "Yin Yang" and run_mode == "50 Apples" and size == "Small":
+        return False
+    # High Score only on high-score modes
+    if run_mode == "High Score" and not is_high_score_mode(gamemode):
+        return False
+    return True
+
+
+def parse_category_parts(settings_key: str) -> dict:
+    parts = (settings_key or "").split("|")
+    return {
+        "apple_amount": parts[0] if len(parts) > 0 else "",
+        "speed": parts[1] if len(parts) > 1 else "",
+        "size": parts[2] if len(parts) > 2 else "",
+        "game_mode": parts[3] if len(parts) > 3 else "",
+        "run_mode": parts[4] if len(parts) > 4 else "",
+    }
+
+
+def tier_index(name: str) -> int:
+    try:
+        return DIFFICULTY_TIERS.index(name)
+    except ValueError:
+        return 0
+
+
+def _effective_mode_tier(mode: str, size: str, speed: str, run: str, apple: str) -> str:
+    if mode == "Peaceful":
+        return "Free"
+
+    tier = MODE_BASE_TIER.get(mode, "Medium")
+
+    if mode == "Wall" and run == "All Apples":
+        if size in ("Standard", "Large") and speed == "Fast":
+            tier = "Inhuman"
+        elif size in ("Standard", "Large"):
+            tier = "Lottery"
+        elif size == "Small" and speed == "Normal":
+            tier = "Hard"
+        elif size == "Small" and speed == "Slow":
+            tier = "Hard"
+        elif size == "Small" and speed == "Fast":
+            tier = "Mythic"
+    elif mode == "Cheese" and run == "50 Apples" and size == "Small":
+        tier = "Warmup" if apple in ("10 Apples", "Bomb") else "Lottery"
+    elif mode == "Statue" and apple == "1 Apple" and run == "50 Apples" and size == "Small":
+        tier = "Lottery"
+    elif mode == "Statue" and run == "100 Apples" and size == "Standard" and apple == "1 Apple":
+        tier = "Mythic"
+    elif mode == "Portal" and apple == "Bomb":
+        tier = "Inhuman" if speed == "Fast" else "Mythic"
+    elif mode == "Poison" and apple == "Bomb":
+        tier = "Inhuman" if speed == "Fast" else "Mythic"
+    elif (
+        mode not in ("Borderless", "Classic", "Cheese", "Magnet", "Light", "Yin Yang")
+        and not (mode == "Statue" and apple in ("10 Apples", "Bomb"))
+        and not (mode == "Arrow" and apple == "Bomb")
+        and not (mode == "Portal" and apple == "Bomb")
+        and not (mode == "Poison" and apple == "Bomb")
+        and speed == "Fast"
+        and size == "Large"
+        and run == "All Apples"
+    ):
+        tier = "Mythic"
+    elif mode == "Portal" and speed == "Fast" and size in ("Standard", "Large"):
+        tier = "Hard"
+    elif mode == "Winged" and speed == "Fast":
+        tier = "Easy"
+
+    if speed == "Fast" and size in ("Standard", "Large"):
+        if tier_index(tier) < tier_index("Medium"):
+            tier = "Medium"
+
+    if size == "Large" and run == "All Apples":
+        if tier_index(tier) < tier_index("Hard"):
+            tier = "Hard"
+
+    if speed == "Slow" and tier == "Mythic":
+        keep = (mode == "Portal" and apple == "Bomb") or (mode == "Poison" and apple == "Bomb")
+        if not keep:
+            tier = "Hard"
+
+    slow_small_exception = (
+        (mode == "Wall" and run == "All Apples")
+        or (mode == "Cheese" and run == "50 Apples" and size == "Small")
+        or (mode == "Statue" and apple == "1 Apple" and run == "50 Apples" and size == "Small")
+        or (mode == "Portal" and apple == "Bomb")
+        or (mode == "Poison" and apple == "Bomb")
+    )
+    if speed == "Slow" and size == "Small" and not slow_small_exception:
+        if tier_index(tier) > tier_index("Medium"):
+            tier = "Medium"
+
+    return tier
+
+
+def _count_weight(mode: str, apple: str) -> int:
+    if mode == "Twin":
+        return 0
+    if mode == "Poison":
+        order = _COUNT_POISON
+    elif mode in _COUNT_LESS_EASIER_MODES:
+        order = _COUNT_LESS_EASIER
+    else:
+        order = _COUNT_MORE_EASIER
+    try:
+        return order.index(apple)
+    except ValueError:
+        return 0
+
+
+def _size_weight(size: str) -> int:
+    return {"Small": 0, "Standard": 1, "Large": 2}.get(size, 1)
+
+
+def _speed_weight(speed: str) -> int:
+    return {"Slow": 0, "Normal": 1, "Fast": 2}.get(speed, 1)
+
+
+def _run_weight(run: str) -> float:
+    return {
+        "25 Apples": 0,
+        "50 Apples": 1,
+        "100 Apples": 2,
+        "High Score": 3,
+        "All Apples": 3.2,
+    }.get(run, 0)
+
+
+def score_category(settings_key: str) -> dict:
+    """Difficulty score/tier matching FastSnakeStats unheld scoring."""
+    parts = parse_category_parts(settings_key)
+    apple, speed, size = parts["apple_amount"], parts["speed"], parts["size"]
+    mode, run = parts["game_mode"], parts["run_mode"]
+    tier = _effective_mode_tier(mode, size, speed, run, apple)
+    score = (
+        tier_index(tier) * 100
+        + _size_weight(size) * 10
+        + _speed_weight(speed) * 10
+        + _count_weight(mode, apple) * 1
+        + _run_weight(run) * 1
+    )
+    return {
+        "score": round(score * 10) / 10,
+        "tier": tier,
+        **parts,
+    }
+
+
+def enumerate_valid_categories() -> list:
+    """All valid category keys (same rules as FastSnakeStats expected set)."""
+    keys = []
+    for apple in get_ordered_apple_amounts():
+        for speed in get_ordered_speeds():
+            for size in get_ordered_sizes():
+                for mode in get_ordered_gamemodes():
+                    for run in _APPLE_RUNS:
+                        if is_valid_category(apple, speed, size, mode, run):
+                            keys.append(get_settings_key(apple, speed, size, mode, run))
+                    if is_high_score_mode(mode):
+                        if is_valid_category(apple, speed, size, mode, "High Score"):
+                            keys.append(
+                                get_settings_key(apple, speed, size, mode, "High Score")
+                            )
+    return keys
+
+
+def filter_valid_categories(
+    game_mode: str = None,
+    apple_amount: str = None,
+    speed: str = None,
+    size: str = None,
+    run_mode: str = None,
+    tier: str = None,
+) -> list:
+    """Valid categories matching optional filters."""
+    # Impossible combo — never produce a pool for it
+    if run_mode == "100 Apples" and size == "Small":
+        return []
+
+    out = []
+    for key in enumerate_valid_categories():
+        parts = parse_category_parts(key)
+        if parts["run_mode"] == "100 Apples" and parts["size"] == "Small":
+            continue
+        if game_mode and parts["game_mode"] != game_mode:
+            continue
+        if apple_amount and parts["apple_amount"] != apple_amount:
+            continue
+        if speed and parts["speed"] != speed:
+            continue
+        if size and parts["size"] != size:
+            continue
+        if run_mode and parts["run_mode"] != run_mode:
+            continue
+        if tier:
+            scored = score_category(key)
+            if scored["tier"] != tier:
+                continue
+        out.append(key)
+    return out
