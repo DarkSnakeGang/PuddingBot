@@ -160,7 +160,7 @@ def clear_context():
         - /unicorns - Lottery-tier unicorn category holds
         - /legends - Mythic-tier legend category holds
         - /unheld - Never-held categories, easiest first (optional difficulty tier + category filters)
-        - /activity - Yearly WR flips / new-WR activity summary
+        - /activity - Yearly new-WR activity (day the #1 actually changed)
 
         I can help users look up world records, player statistics, historical data, and statistics-explorer analytics from the FastSnakeStats database. Commands that take a date support optional historical date parameters to view past snapshots.
         Portal mode has twice the fruit and each one you eat makes the head escape out of it's matching fruit, and spawns 2 additional fruit.

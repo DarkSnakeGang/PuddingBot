@@ -1856,7 +1856,6 @@ class FastSnakeStats(commands.Cog):
         embed.add_field(
             name="Year Totals",
             value=(
-                f"**WR flips:** {summary['total_flips']}\n"
                 f"**New WRs:** {summary['total_new_wrs']}\n"
                 f"**Active days:** {summary['active_days']}"
             ),
@@ -1867,15 +1866,16 @@ class FastSnakeStats(commands.Cog):
             lines = []
             for i, day in enumerate(top_days, 1):
                 lines.append(
-                    f"{i}. **{day['date']}** — "
-                    f"{day['flips']} flips • {day['newWrs']} new WRs"
+                    f"{i}. **{day['date']}** — {day['newWrs']} new WRs"
                 )
             embed.add_field(
                 name="Busiest Days",
                 value="\n".join(lines),
                 inline=False
             )
-        embed.set_footer(text="Data from FastSnakeStats")
+        embed.set_footer(
+            text="Data from FastSnakeStats • New WR = #1 changed that day"
+        )
         return embed
 
     def create_leaderboards_embed(self, board_data: Dict, page: int = 0) -> discord.Embed:
@@ -2803,7 +2803,10 @@ class FastSnakeStats(commands.Cog):
             print(f"Error in unheld command: {e}")
             await interaction.followup.send("❌ An error occurred while fetching unheld categories.")
 
-    @app_commands.command(name="activity", description="Yearly WR activity summary from FastSnakeStats")
+    @app_commands.command(
+        name="activity",
+        description="Yearly new-WR activity (day the #1 actually changed)",
+    )
     @app_commands.describe(year="Year to summarize (defaults to latest)")
     @app_commands.autocomplete(year=activity_year_autocomplete)
     async def activity_command(self, interaction: discord.Interaction, year: Optional[str] = None):
@@ -2825,18 +2828,22 @@ class FastSnakeStats(commands.Cog):
                 )
                 return
 
-            year_entries = [e for e in heatmap if (e.get('date') or '').startswith(selected_year)]
-            total_flips = sum(e.get('flips', 0) for e in year_entries)
-            total_new = sum(e.get('newWrs', 0) for e in year_entries)
-            active_days = sum(1 for e in year_entries if e.get('flips', 0) or e.get('newWrs', 0))
-            top_days = sorted(
-                year_entries,
-                key=lambda e: (e.get('flips', 0) + e.get('newWrs', 0), e.get('flips', 0)),
-                reverse=True,
-            )[:10]
+            # Heatmap `flips` = #1 player/time changed vs previous day.
+            # Ignore heatmap `newWrs` (SRC run.date == snapshot day / verify timing).
+            year_entries = []
+            for e in heatmap:
+                if not (e.get('date') or '').startswith(selected_year):
+                    continue
+                year_entries.append({
+                    'date': e.get('date'),
+                    'newWrs': e.get('flips', 0) or 0,
+                })
+
+            total_new = sum(e['newWrs'] for e in year_entries)
+            active_days = sum(1 for e in year_entries if e['newWrs'] > 0)
+            top_days = sorted(year_entries, key=lambda e: e['newWrs'], reverse=True)[:10]
 
             summary = {
-                'total_flips': total_flips,
                 'total_new_wrs': total_new,
                 'active_days': active_days,
                 'top_days': top_days,
