@@ -146,7 +146,7 @@ def clear_context():
         - /record - Get world records for specific game settings (game mode, apple amount, speed, size, run mode, optional date)
         - /leaderboards - Full WR table for a chosen apple count, speed, and size across all modes (optional date)
         - /available-dates - List available historical dates for viewing past records
-        - /player - Get player statistics and recent activity (player name, optional date)
+        - /player - Player profile: current WRs, career, peaks, longevity, improving, holds (name, optional date)
         - /stats - Get top record holders statistics (by number and percentage, optional date)
         - /report - Weekly report of new and changed world records
         - /monthly - Monthly oldest-records update (optional YYYY-MM with complete FastSnakeStats months)

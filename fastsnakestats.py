@@ -94,11 +94,13 @@ class FastSnakeStats(commands.Cog):
             player_name_lower = player_name.lower()
             player_records = []
             total_runs = 0
+            total_world_records = 0
             
             # Search through all settings for this player
             for settings_key, runs in world_records.items():
                 if not runs or len(runs) == 0:
                     continue
+                total_world_records += len(runs)
                 
                 # Count all runs for this player in this settings combination (matching /stats logic)
                 for run in runs:
@@ -113,27 +115,49 @@ class FastSnakeStats(commands.Cog):
                             })
             
             peak_stats = await github_cache_fetcher.get_player_peak_stats(player_name)
+            display_name = (peak_stats or {}).get('name') or player_name
+            player_id = (peak_stats or {}).get('id')
+            snapshot_date = date or await github_cache_fetcher.get_most_recent_date()
+            current_pct = (
+                round((total_runs / total_world_records) * 100, 2)
+                if total_world_records > 0 else 0.0
+            )
+
+            longevity_best = await github_cache_fetcher.get_player_longevity_best(
+                player_id=player_id, player_name=display_name
+            )
+            improving = await github_cache_fetcher.get_player_improving(
+                player_id=player_id, player_name=display_name
+            )
 
             if not player_records:
                 if not peak_stats:
                     return None
                 return {
-                    'player_name': peak_stats.get('name') or player_name,
+                    'player_name': display_name,
                     'world_records_held': 0,
+                    'current_percentage': 0.0,
+                    'total_world_records': total_world_records,
                     'recent_activity': [],
-                    'date': date or await github_cache_fetcher.get_most_recent_date(),
+                    'date': snapshot_date,
                     'peak_stats': peak_stats,
+                    'longevity_best': longevity_best,
+                    'improving': improving,
                 }
 
             # Sort by date (most recent first)
             player_records.sort(key=lambda x: dm.get_run_date(x['run']), reverse=True)
             
             return {
-                'player_name': (peak_stats or {}).get('name') or player_name,
-                'world_records_held': total_runs,  # Now matches /stats calculation
-                'recent_activity': player_records,  # All runs, not just 10
-                'date': date or await github_cache_fetcher.get_most_recent_date(),
+                'player_name': display_name,
+                'world_records_held': total_runs,
+                'current_percentage': current_pct,
+                'total_world_records': total_world_records,
+                'recent_activity': player_records,
+                'date': snapshot_date,
                 'peak_stats': peak_stats,
+                'longevity_best': longevity_best,
+                'improving': improving,
             }
             
         except Exception as e:
@@ -927,6 +951,21 @@ class FastSnakeStats(commands.Cog):
         
         return embed
     
+    def _format_player_career_stats(self, peak_stats: Optional[Dict]) -> str:
+        if not peak_stats:
+            return "No career metadata available."
+        total_records = peak_stats.get('totalRecords')
+        total_dates = peak_stats.get('totalDates')
+        lines = []
+        if total_dates is not None:
+            lines.append(f"**Dates active:** {total_dates}")
+        if total_records is not None:
+            lines.append(f"**Career WR-days:** {total_records}")
+        if total_records is not None and total_dates:
+            avg = round((total_records / total_dates) * 10) / 10
+            lines.append(f"**Avg / day:** {avg}")
+        return "\n".join(lines) if lines else "No career metadata available."
+
     def _format_player_peak_stats(self, peak_stats: Optional[Dict]) -> str:
         if not peak_stats:
             return "No historical peak data available."
@@ -934,6 +973,7 @@ class FastSnakeStats(commands.Cog):
         lines = []
         peak_records = peak_stats.get('peakRecords') or {}
         peak_pct = peak_stats.get('peakPercentage') or {}
+        latest = peak_stats.get('latest') or {}
 
         if peak_records.get('count') is not None and peak_records.get('date'):
             lines.append(
@@ -943,96 +983,135 @@ class FastSnakeStats(commands.Cog):
             lines.append(
                 f"**Peak Percentage:** {peak_pct['percentage']:.2f}% on {peak_pct['date']}"
             )
+        if latest.get('date') and (
+            latest.get('count') is not None or latest.get('percentage') is not None
+        ):
+            count = latest.get('count', '?')
+            pct = latest.get('percentage')
+            pct_text = f", {pct:.2f}%" if pct is not None else ""
+            lines.append(f"**Latest snapshot:** {count} records{pct_text} on {latest['date']}")
         return "\n".join(lines) if lines else "No historical peak data available."
+
+    def _format_player_longevity_line(self, label: str, item: Optional[Dict]) -> str:
+        if not item:
+            return f"**{label}:** None"
+        time_str = self._format_linked_hold_time(item)
+        end_label = "present" if item.get('stillStanding') else item.get('end', '?')
+        return (
+            f"**{label}:** **{item.get('days', '?')} days** — "
+            f"{self._format_category_line(item.get('category', ''))} — "
+            f"{time_str} • `{item.get('start', '?')}` → `{end_label}`"
+        )
+
+    def _format_player_improving(self, improving: Optional[Dict]) -> str:
+        if not improving:
+            return "No recent WR gains in explorer windows."
+        order = ["7d", "30d", "90d", "365d"]
+        lines = []
+        for window in order:
+            row = improving.get(window)
+            if not row:
+                continue
+            lines.append(
+                f"**{window}:** +{row.get('delta', 0)} "
+                f"({row.get('startCount', '?')} → {row.get('endCount', '?')})"
+            )
+        return "\n".join(lines) if lines else "No recent WR gains in explorer windows."
 
     def create_player_embed(self, player_data: Dict, page: int = 0) -> discord.Embed:
         """Create a rich embed for player display with pagination"""
+        activity = player_data.get('recent_activity') or []
+        runs_per_page = 5
+        total_pages = max(1, (len(activity) + runs_per_page - 1) // runs_per_page)
+        page = max(0, min(page, total_pages - 1))
+
         embed = discord.Embed(
             title=f"👤 Player Profile - {player_data['player_name']}",
-            color=0x0099ff,  # Blue for player profiles
+            color=0x0099ff,
             timestamp=datetime.now()
         )
-        
-        # Add statistics fields
+
+        current_pct = player_data.get('current_percentage')
+        pct_text = (
+            f" • **{current_pct:.2f}%**"
+            if current_pct is not None else ""
+        )
         embed.add_field(
-            name="📊 Statistics",
-            value=f"**World Records:** {player_data['world_records_held']}",
+            name="📊 Current Snapshot",
+            value=(
+                f"**World Records:** {player_data['world_records_held']}{pct_text}\n"
+                f"**As of:** `{player_data['date']}`"
+            ),
             inline=False
         )
 
         embed.add_field(
-            name="📈 Historical Peaks",
+            name="📚 Career",
+            value=self._format_player_career_stats(player_data.get('peak_stats')),
+            inline=False
+        )
+
+        embed.add_field(
+            name="📈 Peaks",
             value=self._format_player_peak_stats(player_data.get('peak_stats')),
             inline=False
         )
-        
-        # Add recent activity with pagination
-        if player_data['recent_activity']:
-            runs_per_page = 5
+
+        longevity = player_data.get('longevity_best') or {}
+        embed.add_field(
+            name="⏳ Longevity",
+            value=(
+                self._format_player_longevity_line("Best all-time", longevity.get('allTime'))
+                + "\n"
+                + self._format_player_longevity_line("Best still standing", longevity.get('standing'))
+            ),
+            inline=False
+        )
+
+        improving = player_data.get('improving')
+        if improving:
+            embed.add_field(
+                name="🚀 Improving",
+                value=self._format_player_improving(improving),
+                inline=False
+            )
+
+        if activity:
             start_idx = page * runs_per_page
-            end_idx = start_idx + runs_per_page
-            page_runs = player_data['recent_activity'][start_idx:end_idx]
-            
+            page_runs = activity[start_idx:start_idx + runs_per_page]
             recent_text = ""
             for i, record in enumerate(page_runs, start_idx + 1):
                 settings_parts = record['settings'].split('|')
-                
-                # Full category details
                 apple_amount = settings_parts[0]
                 speed = settings_parts[1]
                 size = settings_parts[2]
                 gamemode = settings_parts[3]
                 run_mode = settings_parts[4]
-                
                 category_info = f"{gamemode} • {apple_amount} • {speed} • {size} • {run_mode}"
-                
-                # Handle High Score mode display
-                if run_mode == "High Score":
-                    time_str = dm.get_run_time(record['run'])
-                    # Check for both old format (0m 0s Xms) and new format (Xs Yms)
-                    if time_str.startswith("0m 0s ") or (time_str.endswith("ms") and "m " not in time_str and "h " not in time_str):
-                        # Extract the milliseconds part for High Score
-                        if time_str.startswith("0m 0s "):
-                            score = time_str.replace("0m 0s ", "").replace("ms", "")
-                        else:
-                            # New format: "Xs Yms" -> extract Y
-                            score = time_str.split("s ")[1].replace("ms", "")
-                        display_info = f"{score} apples"
-                    else:
-                        display_info = time_str
-                else:
-                    display_info = dm.get_run_time(record['run'])
-                
+                display_info = self._format_time_for_display(
+                    dm.get_run_time(record['run']), run_mode
+                )
                 date = dm.get_run_date(record['run'])
                 run_link = dm.get_run_link(record['run'])
-                
                 if run_link:
                     recent_text += f"{i}. **{category_info}**\n   {display_info} • {date} • [View Run]({run_link})\n\n"
                 else:
                     recent_text += f"{i}. **{category_info}**\n   {display_info} • {date}\n\n"
-            
             if not recent_text:
                 recent_text = "No more runs to show."
-            
-            embed.add_field(
-                name="🕒 Recent Activity",
-                value=recent_text,
-                inline=False
-            )
+            embed.add_field(name="🕒 Current Holds", value=recent_text, inline=False)
         else:
             embed.add_field(
-                name="🕒 Recent Activity",
+                name="🕒 Current Holds",
                 value="No current world records held.",
                 inline=False
             )
-        
-        # Add footer with page info
-        activity_len = len(player_data.get('recent_activity') or [])
-        total_pages = max(1, (activity_len + 4) // 5)  # 5 runs per page
-        embed.set_footer(text=f"Data from FastSnakeStats • {player_data['date']} • Page {page + 1}/{total_pages}")
-        
+
+        embed.set_footer(
+            text=f"Data from FastSnakeStats • {player_data['date']} • Page {page + 1}/{total_pages}"
+        )
         return embed
-    
+
     def create_stats_embed(self, stats_data: Dict, page: int = 0) -> discord.Embed:
         """Create a rich embed for stats display with pagination"""
         embed = discord.Embed(
@@ -1954,7 +2033,10 @@ class FastSnakeStats(commands.Cog):
             print(f"Error in available-dates command: {e}")
             await interaction.followup.send("❌ An error occurred while fetching available dates.")
     
-    @app_commands.command(name="player", description="Get player statistics and recent activity")
+    @app_commands.command(
+        name="player",
+        description="Player profile: WRs, career, peaks, longevity, improving, holds",
+    )
     @app_commands.describe(
         player_name="Player name to look up",
         date="Historical date - optional"
@@ -1979,9 +2061,14 @@ class FastSnakeStats(commands.Cog):
             embed = self.create_player_embed(player_data, page=0)
             
             # Create view with pagination buttons (only if multiple pages)
-            total_pages = (len(player_data['recent_activity']) + 4) // 5  # 5 runs per page
+            activity_len = len(player_data.get('recent_activity') or [])
+            total_pages = max(1, (activity_len + 4) // 5)  # 5 runs per page
             if total_pages > 1:
-                view = PlayerPaginationView(player_data, interaction.user.id)
+                view = PlayerPaginationView(
+                    player_data,
+                    interaction.user.id,
+                    embed_factory=self.create_player_embed,
+                )
                 await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
@@ -2994,12 +3081,13 @@ class StatsPaginationView(discord.ui.View):
         return embed
 
 class PlayerPaginationView(discord.ui.View):
-    """View for paginating through player results"""
+    """View for paginating through player holds"""
     
-    def __init__(self, player_data: Dict, user_id: int):
+    def __init__(self, player_data: Dict, user_id: int, embed_factory):
         super().__init__(timeout=300)  # 5 minute timeout
         self.player_data = player_data
         self.user_id = user_id
+        self.embed_factory = embed_factory
         self.current_page = 0
         self.runs_per_page = 5
         activity_len = len(player_data.get('recent_activity') or [])
@@ -3025,118 +3113,10 @@ class PlayerPaginationView(discord.ui.View):
     
     async def update_view(self, interaction: discord.Interaction):
         """Update the view with new page"""
-        # Update button states
         self.previous_button.disabled = self.current_page == 0
         self.next_button.disabled = self.current_page >= self.total_pages - 1
-        
-        # Create new embed
-        embed = self.create_player_embed(self.player_data, self.current_page)
-        
+        embed = self.embed_factory(self.player_data, self.current_page)
         await interaction.response.edit_message(embed=embed, view=self)
-    
-    def create_player_embed(self, player_data: Dict, page: int = 0) -> discord.Embed:
-        """Create a rich embed for player display with pagination"""
-        embed = discord.Embed(
-            title=f"👤 Player Profile - {player_data['player_name']}",
-            color=0x0099ff,  # Blue for player profiles
-            timestamp=datetime.now()
-        )
-        
-        # Add statistics fields
-        embed.add_field(
-            name="📊 Statistics",
-            value=f"**World Records:** {player_data['world_records_held']}",
-            inline=False
-        )
-
-        peak_stats = player_data.get('peak_stats')
-        if peak_stats:
-            lines = []
-            peak_records = peak_stats.get('peakRecords') or {}
-            peak_pct = peak_stats.get('peakPercentage') or {}
-            if peak_records.get('count') is not None and peak_records.get('date'):
-                lines.append(
-                    f"**Peak Records:** {peak_records['count']} on {peak_records['date']}"
-                )
-            if peak_pct.get('percentage') is not None and peak_pct.get('date'):
-                lines.append(
-                    f"**Peak Percentage:** {peak_pct['percentage']:.2f}% on {peak_pct['date']}"
-                )
-            embed.add_field(
-                name="📈 Historical Peaks",
-                value="\n".join(lines) if lines else "No historical peak data available.",
-                inline=False
-            )
-        else:
-            embed.add_field(
-                name="📈 Historical Peaks",
-                value="No historical peak data available.",
-                inline=False
-            )
-        
-        # Add recent activity with pagination
-        if player_data['recent_activity']:
-            start_idx = page * self.runs_per_page
-            end_idx = start_idx + self.runs_per_page
-            page_runs = player_data['recent_activity'][start_idx:end_idx]
-            
-            recent_text = ""
-            for i, record in enumerate(page_runs, start_idx + 1):
-                settings_parts = record['settings'].split('|')
-                
-                # Full category details
-                apple_amount = settings_parts[0]
-                speed = settings_parts[1]
-                size = settings_parts[2]
-                gamemode = settings_parts[3]
-                run_mode = settings_parts[4]
-                
-                category_info = f"{gamemode} • {apple_amount} • {speed} • {size} • {run_mode}"
-                
-                # Handle High Score mode display
-                if run_mode == "High Score":
-                    time_str = dm.get_run_time(record['run'])
-                    # Check for both old format (0m 0s Xms) and new format (Xs Yms)
-                    if time_str.startswith("0m 0s ") or (time_str.endswith("ms") and "m " not in time_str and "h " not in time_str):
-                        # Extract the milliseconds part for High Score
-                        if time_str.startswith("0m 0s "):
-                            score = time_str.replace("0m 0s ", "").replace("ms", "")
-                        else:
-                            # New format: "Xs Yms" -> extract Y
-                            score = time_str.split("s ")[1].replace("ms", "")
-                        display_info = f"{score} apples"
-                    else:
-                        display_info = time_str
-                else:
-                    display_info = dm.get_run_time(record['run'])
-                
-                date = dm.get_run_date(record['run'])
-                run_link = dm.get_run_link(record['run'])
-                
-                if run_link:
-                    recent_text += f"{i}. **{category_info}**\n   {display_info} • {date} • [View Run]({run_link})\n\n"
-                else:
-                    recent_text += f"{i}. **{category_info}**\n   {display_info} • {date}\n\n"
-            
-            if not recent_text:
-                recent_text = "No more runs to show."
-            
-            embed.add_field(
-                name="🕒 Recent Activity",
-                value=recent_text,
-                inline=False
-            )
-        else:
-            embed.add_field(
-                name="🕒 Recent Activity",
-                value="No current world records held.",
-                inline=False
-            )
-        
-        # Add footer with page info
-        embed.set_footer(text=f"Data from FastSnakeStats • {player_data['date']} • Page {page + 1}/{self.total_pages}")
-        
-        return embed
 
 class ReportPaginationView(discord.ui.View):
     """View for paginating through report results"""

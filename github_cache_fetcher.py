@@ -251,9 +251,103 @@ class GitHubCacheFetcher:
                     'totalDates': player.get('totalDates'),
                     'peakRecords': player.get('peakRecords'),
                     'peakPercentage': player.get('peakPercentage'),
+                    'latest': player.get('latest'),
                     'lastUpdated': metadata.get('lastUpdated'),
                 }
         return None
+
+    async def get_player_longevity_best(
+        self, player_id: Optional[str] = None, player_name: Optional[str] = None
+    ) -> Optional[Dict]:
+        """Best all-time and still-standing holds for a player from progression."""
+        if not player_id and not player_name:
+            return None
+        explorer = await self.fetch_statistics_explorer()
+        if not explorer:
+            return None
+
+        progression = explorer.get('progression') or {}
+        latest = ((explorer.get('meta') or {}).get('dateRange') or {}).get('latest')
+        if not latest:
+            latest = datetime.utcnow().strftime('%Y-%m-%d')
+
+        name_lower = (player_name or '').lower().strip()
+        best_all = None
+        best_standing = None
+
+        for category, flips in progression.items():
+            if not flips:
+                continue
+            for i, flip in enumerate(flips):
+                fid = flip.get('i')
+                fname = (flip.get('n') or '').lower()
+                if player_id and fid == player_id:
+                    matched = True
+                elif name_lower and fname == name_lower:
+                    matched = True
+                else:
+                    matched = False
+                if not matched:
+                    continue
+
+                start = flip.get('d')
+                if not start:
+                    continue
+                next_flip = flips[i + 1] if i + 1 < len(flips) else None
+                next_date = next_flip.get('d') if next_flip else None
+                if next_date:
+                    end = next_date
+                    still_standing = False
+                else:
+                    end = latest
+                    still_standing = True
+                try:
+                    days = (
+                        datetime.fromisoformat(end).date()
+                        - datetime.fromisoformat(start).date()
+                    ).days
+                except ValueError:
+                    continue
+
+                row = {
+                    'category': category,
+                    'playerId': fid,
+                    'playerName': flip.get('n') or player_name or 'Unknown',
+                    'time': flip.get('t') or '',
+                    'weblink': flip.get('w'),
+                    'start': start,
+                    'end': end,
+                    'days': days,
+                    'stillStanding': still_standing,
+                }
+                if best_all is None or days > best_all['days']:
+                    best_all = row
+                if still_standing and (best_standing is None or days > best_standing['days']):
+                    best_standing = row
+
+        return {'allTime': best_all, 'standing': best_standing}
+
+    async def get_player_improving(
+        self, player_id: Optional[str] = None, player_name: Optional[str] = None
+    ) -> Optional[Dict[str, Dict]]:
+        """Improving deltas for a player across explorer windows."""
+        if not player_id and not player_name:
+            return None
+        explorer = await self.fetch_statistics_explorer()
+        if not explorer or not explorer.get('improving'):
+            return None
+
+        name_lower = (player_name or '').lower().strip()
+        found: Dict[str, Dict] = {}
+        for window, rows in (explorer.get('improving') or {}).items():
+            for row in rows or []:
+                if player_id and row.get('playerId') == player_id:
+                    found[window] = row
+                    break
+                if name_lower and (row.get('playerName') or '').lower() == name_lower:
+                    found[window] = row
+                    break
+        return found or None
 
     async def fetch_statistics_explorer(self, force_refresh: bool = False) -> Optional[Dict]:
         """Fetch statistics-explorer metadata (cached in memory for 1 hour)."""
