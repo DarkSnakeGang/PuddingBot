@@ -46,6 +46,8 @@ BAD_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'bad.g
 SOKOBAN_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'sokoban.gif')
 PATTERN_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'pattern.gif')
 COUNT_COUNT_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'count_count.gif')
+POISON_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'poison.png')
+YIN_YANG_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'yin_yang.png')
 
 if not TOKEN:
     raise SystemExit(
@@ -222,6 +224,28 @@ async def on_message(message: Message) -> None:
             await message.channel.send(file=File(COUNT_COUNT_ASSET, filename="count_count.gif"))
         except Exception as e:
             print(f"Failed to send count count meme: {e}")
+
+    # 1/6 easter egg when poison is mentioned
+    if (
+        re.search(r"\bpoison\b", lowered_message)
+        and random.randint(1, 6) == 1
+        and os.path.isfile(POISON_ASSET)
+    ):
+        try:
+            await message.channel.send(file=File(POISON_ASSET, filename="poison.png"))
+        except Exception as e:
+            print(f"Failed to send poison meme: {e}")
+
+    # 1/16 easter egg when yin yang is mentioned
+    if (
+        "yin yang" in lowered_message
+        and random.randint(1, 16) == 1
+        and os.path.isfile(YIN_YANG_ASSET)
+    ):
+        try:
+            await message.channel.send(file=File(YIN_YANG_ASSET, filename="yin_yang.png"))
+        except Exception as e:
+            print(f"Failed to send yin yang meme: {e}")
 
     if not (user_message.lower()[:3] == 'gif' and in_poi):
         await send_message(message, user_message, message.author.id)
