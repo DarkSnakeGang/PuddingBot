@@ -961,9 +961,6 @@ class FastSnakeStats(commands.Cog):
             lines.append(f"**Dates active:** {total_dates}")
         if total_records is not None:
             lines.append(f"**Career WR-days:** {total_records}")
-        if total_records is not None and total_dates:
-            avg = round((total_records / total_dates) * 10) / 10
-            lines.append(f"**Avg / day:** {avg}")
         return "\n".join(lines) if lines else "No career metadata available."
 
     def _format_player_peak_stats(self, peak_stats: Optional[Dict]) -> str:
