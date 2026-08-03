@@ -45,6 +45,7 @@ WAIT_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'wait
 BAD_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'bad.gif')
 SOKOBAN_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'sokoban.gif')
 PATTERN_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'pattern.gif')
+COUNT_COUNT_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'count_count.gif')
 
 if not TOKEN:
     raise SystemExit(
@@ -210,6 +211,17 @@ async def on_message(message: Message) -> None:
             await message.channel.send(file=File(PATTERN_ASSET, filename="pattern.gif"))
         except Exception as e:
             print(f"Failed to send pattern meme: {e}")
+
+    # 1/5 easter egg when someone says "count count"
+    if (
+        "count count" in lowered_message
+        and random.randint(1, 5) == 1
+        and os.path.isfile(COUNT_COUNT_ASSET)
+    ):
+        try:
+            await message.channel.send(file=File(COUNT_COUNT_ASSET, filename="count_count.gif"))
+        except Exception as e:
+            print(f"Failed to send count count meme: {e}")
 
     if not (user_message.lower()[:3] == 'gif' and in_poi):
         await send_message(message, user_message, message.author.id)
