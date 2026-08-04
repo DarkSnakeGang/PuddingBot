@@ -51,6 +51,7 @@ COUNT_COUNT_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets'
 POISON_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'poison.png')
 YIN_YANG_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'yin_yang.png')
 TALLY_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'tally.gif')
+TALLY_LEARNING_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'tally_learning.png')
 SOFTLOCK_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'softlock.gif')
 BAD_RNG_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'bad_rng.png')
 # Always-fire phrase
@@ -278,16 +279,22 @@ async def on_message(message: Message) -> None:
         except Exception as e:
             print(f"Failed to send yin yang meme: {e}")
 
-    # 1/5 easter egg when tally is mentioned
+    # 1/5 easter egg when tally is mentioned (50/50 between two memes)
     if (
         re.search(r"\btally\b", lowered_message)
         and random.randint(1, 5) == 1
-        and os.path.isfile(TALLY_ASSET)
     ):
-        try:
-            await message.channel.send(file=File(TALLY_ASSET, filename="tally.gif"))
-        except Exception as e:
-            print(f"Failed to send tally meme: {e}")
+        tally_choices = [
+            (TALLY_ASSET, "tally.gif"),
+            (TALLY_LEARNING_ASSET, "tally_learning.png"),
+        ]
+        available = [(path, name) for path, name in tally_choices if os.path.isfile(path)]
+        if available:
+            path, filename = random.choice(available)
+            try:
+                await message.channel.send(file=File(path, filename=filename))
+            except Exception as e:
+                print(f"Failed to send tally meme: {e}")
 
     # 1/3 easter egg when softlock is mentioned
     if (
