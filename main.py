@@ -49,7 +49,7 @@ PATTERN_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'p
 COUNT_COUNT_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'count_count.gif')
 POISON_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'poison.png')
 YIN_YANG_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'yin_yang.png')
-TALLY_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'tally.png')
+TALLY_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'tally.gif')
 SOFTLOCK_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'softlock.gif')
 
 if not TOKEN:
@@ -265,7 +265,7 @@ async def on_message(message: Message) -> None:
         and os.path.isfile(TALLY_ASSET)
     ):
         try:
-            await message.channel.send(file=File(TALLY_ASSET, filename="tally.png"))
+            await message.channel.send(file=File(TALLY_ASSET, filename="tally.gif"))
         except Exception as e:
             print(f"Failed to send tally meme: {e}")
 
