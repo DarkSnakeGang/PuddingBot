@@ -8,6 +8,7 @@ import discord
 from discord import Intents, Message, Object, NotFound, Forbidden, HTTPException, File
 from discord.ext import commands
 from responses import get_response, is_allowed_poi_message
+import data_management as dm
 import asyncio
 
 # Load Token
@@ -141,6 +142,13 @@ async def on_ready() -> None:
             bot.tree.copy_global_to(guild=guild)
             synced_guild = await bot.tree.sync(guild=guild)
             print(f"Synced {len(synced_guild)} guild command(s) to guild {GUILD_ID}")
+
+            live_guild = bot.get_guild(int(GUILD_ID))
+            if live_guild is not None:
+                mapped = dm.refresh_emoji_map_from_guild(live_guild)
+                print(f"Mapped {mapped} setting icon emoji(s) from guild {GUILD_ID}")
+            else:
+                print(f"Guild {GUILD_ID} not available yet for emoji mapping")
     except Exception as e:
         print(f"Error syncing commands: {e}")
 

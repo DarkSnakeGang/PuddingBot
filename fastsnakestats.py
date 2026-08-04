@@ -911,17 +911,24 @@ class FastSnakeStats(commands.Cog):
         chosen_mode = getattr(interaction.namespace, "game_mode", None)
         if chosen_size == "Small":
             options = [r for r in options if r != "100 Apples"]
-        if chosen_mode and not dm.is_high_score_mode(chosen_mode):
-            options = [r for r in options if r != "High Score"]
+        if chosen_mode:
+            chosen_apple = getattr(interaction.namespace, "apple_amount", None)
+            if chosen_apple:
+                if not dm.allows_high_score(chosen_apple, chosen_mode):
+                    options = [r for r in options if r != "High Score"]
+            elif not (
+                dm.is_high_score_mode(chosen_mode)
+                or dm.is_tally_ce_highscore_mode(chosen_mode)
+            ):
+                options = [r for r in options if r != "High Score"]
         return self._filter_setting_choices(options, current)
     
     def create_record_embed(self, record_data: Dict, settings_key: str) -> discord.Embed:
         """Create a rich embed for record display"""
         run = record_data['run']
-        settings_parts = settings_key.split('|')
         
         embed = discord.Embed(
-            title=f"🏆 World Record - {' | '.join(settings_parts[:4])}",
+            title=f"🏆 World Record — {dm.format_category_key(settings_key)}",
             color=0x00ff00,  # Green for records
             timestamp=datetime.now()
         )
@@ -1097,12 +1104,8 @@ class FastSnakeStats(commands.Cog):
             recent_text = ""
             for i, record in enumerate(page_runs, start_idx + 1):
                 settings_parts = record['settings'].split('|')
-                apple_amount = settings_parts[0]
-                speed = settings_parts[1]
-                size = settings_parts[2]
-                gamemode = settings_parts[3]
-                run_mode = settings_parts[4]
-                category_info = f"{gamemode} • {apple_amount} • {speed} • {size} • {run_mode}"
+                run_mode = settings_parts[4] if len(settings_parts) > 4 else ""
+                category_info = dm.format_category_key(record['settings'])
                 display_info = self._format_time_for_display(
                     dm.get_run_time(record['run']), run_mode
                 )
@@ -1219,7 +1222,7 @@ class FastSnakeStats(commands.Cog):
             for emoji, item, item_type in page_items:
                 settings_parts = item['settings'].split('|')
                 run_mode = settings_parts[4]
-                category_info = f"{settings_parts[3]} • {settings_parts[0]} • {settings_parts[1]} • {settings_parts[2]} • {run_mode}"
+                category_info = dm.format_category_key(record['settings'])
                 
                 if item_type == 'new':
                     display_time = self._format_time_for_display(item['time'], run_mode)
@@ -2166,11 +2169,20 @@ class FastSnakeStats(commands.Cog):
         """Get a random valid combination of game settings"""
         await interaction.response.defer()
         try:
-            if run_mode == "High Score" and game_mode and not dm.is_high_score_mode(game_mode):
-                await interaction.followup.send(
-                    f"❌ `{game_mode}` is not a high-score mode, so High Score runs don't exist for it."
-                )
-                return
+            if run_mode == "High Score" and game_mode:
+                if apple_amount and not dm.allows_high_score(apple_amount, game_mode):
+                    await interaction.followup.send(
+                        f"❌ High Score does not exist for `{apple_amount}` + `{game_mode}`."
+                    )
+                    return
+                if not apple_amount and not (
+                    dm.is_high_score_mode(game_mode)
+                    or dm.is_tally_ce_highscore_mode(game_mode)
+                ):
+                    await interaction.followup.send(
+                        f"❌ `{game_mode}` is not a high-score mode, so High Score runs don't exist for it."
+                    )
+                    return
             if run_mode == "100 Apples" and size == "Small":
                 await interaction.followup.send(
                     "❌ `100 Apples` on `Small` is not a valid category."
@@ -3235,7 +3247,7 @@ class ReportPaginationView(discord.ui.View):
             for emoji, item, item_type in page_items:
                 settings_parts = item['settings'].split('|')
                 run_mode = settings_parts[4]
-                category_info = f"{settings_parts[3]} • {settings_parts[0]} • {settings_parts[1]} • {settings_parts[2]} • {run_mode}"
+                category_info = dm.format_category_key(record['settings'])
                 
                 if item_type == 'new':
                     display_time = self._format_time_for_display(item['time'], run_mode)

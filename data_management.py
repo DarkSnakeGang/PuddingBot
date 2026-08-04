@@ -1,6 +1,12 @@
 # Data Management & State Module
 # Handles all application state, variables, and data structures
 
+from __future__ import annotations
+
+import json
+import os
+from typing import Dict, Optional
+
 # Game settings data structures (from FastSnakeStats)
 APPLE_AMOUNTS = {
     "1 Apple": {"visible": True, "icon": "https://i.ibb.co/rGZV12Ym/count-00-png.png", "id": "count_00"},
@@ -8,7 +14,12 @@ APPLE_AMOUNTS = {
     "5 Apples": {"visible": True, "icon": "https://i.ibb.co/SSc8jww/count-02-png.png", "id": "count_02"},
     "10 Apples": {"visible": True, "icon": "https://i.ibb.co/gbTbZvw8/count-03.png", "id": "count_03"},
     "Dice": {"visible": True, "icon": "https://i.ibb.co/8DzSj9hV/count-03-png.png", "id": "count_04"},
-    "Bomb": {"visible": True, "icon": "https://i.ibb.co/kVXQJrVp/count-05.png", "id": "count_05"}
+    "Bomb": {"visible": True, "icon": "https://i.ibb.co/kVXQJrVp/count-05.png", "id": "count_05"},
+    "Tally": {
+        "visible": True,
+        "icon": os.path.join(os.path.dirname(__file__), "assets", "count_06.png"),
+        "id": "count_06",
+    },
 }
 
 SPEEDS = {
@@ -44,7 +55,7 @@ GAMEMODES = {
     "Hotdog": {"visible": True, "icon": "https://i.ibb.co/FF4hdbz/trophy-17-png.png", "id": "trophy_18"},
     "Magnet": {"visible": True, "icon": "https://i.ibb.co/nMbMjjfL/trophy-18-png.png", "id": "trophy_19"},
     "Gate": {"visible": True, "icon": "https://i.ibb.co/1tp8JqBM/trophy-19-png.png", "id": "trophy_20"},
-    "Bridge": {"visible": True, "icon": "https://www.google.com/logos/fnbx/snake_arcade/v22/trophy_20.png", "id": "trophy_22"},
+    "Bridge": {"visible": True, "icon": "https://i.ibb.co/Kj7tYtM7/trophy-20.png", "id": "trophy_22"},
     "Peaceful": {"visible": True, "icon": "https://i.ibb.co/jvrCYD8r/trophy-17-png.png", "id": "trophy_21"}
 }
 
@@ -56,16 +67,163 @@ RUN_MODES = {
     "High Score": {"visible": True, "icon": None, "text": "High Score", "id": "mode_04"}
 }
 
+EMOJI_MAP_PATH = os.path.join(os.path.dirname(__file__), "emoji_map.json")
+_emoji_map_cache: Optional[Dict[str, str]] = None
+
+# Guild custom emoji names already on the Snake Discord (from server emoji list)
+SETTING_EMOJI_NAMES: Dict[str, str] = {
+    # Apple counts
+    "1 Apple": "1_apple_count",
+    "3 Apples": "3_apples_count",
+    "5 Apples": "5_apples_count",
+    "10 Apples": "10_apples_count",
+    "Dice": "dice_apple_count",
+    "Bomb": "bomb_apple_count",
+    "Tally": "tally",
+    # Speeds
+    "Normal": "normal_speed",
+    "Fast": "fast_speed",
+    "Slow": "speed_02",  # turtle emoji on server
+    # Sizes
+    "Standard": "standard_board_size",
+    "Small": "small_board_size",
+    "Large": "large_board_size",
+    # Modes
+    "Classic": "classic_mode",
+    "Wall": "wall_mode",
+    "Portal": "portal_mode",
+    "Cheese": "cheese_mode",
+    "Borderless": "borderless_mode",
+    "Twin": "twin_mode",
+    "Winged": "winged_mode",
+    "Yin Yang": "yin_yang_mode",
+    "Key": "key_mode",
+    "Sokoban": "sokoban_mode",
+    "Poison": "poison_mode",
+    "Dimension": "dimension_mode",
+    "Minesweeper": "minesweeper_mode",
+    "Statue": "statue_mode",
+    "Light": "light_mode",
+    "Shield": "shield_mode",
+    "Arrow": "arrow_mode",
+    "Hotdog": "hotdog_mode",
+    "Magnet": "magnet_mode",
+    "Gate": "gate_mode",
+    "Bridge": "bridge_mode",
+    "Peaceful": "peaceful_mode",
+}
+
+# Alternate emoji names to try if the primary is missing
+SETTING_EMOJI_NAME_ALIASES: Dict[str, tuple] = {
+    "Yin Yang": ("yin_yang_mode", "yinyang_mode", "yin_yang", "yy_mode"),
+    "Slow": ("speed_02", "slow_speed"),
+}
+
+
+def load_emoji_map(force: bool = False) -> Dict[str, str]:
+    """In-memory emoji map: setting_id -> <:name:id> (filled from guild on startup)."""
+    global _emoji_map_cache
+    if _emoji_map_cache is not None and not force:
+        return _emoji_map_cache
+    # Optional leftover file from older versions
+    if os.path.isfile(EMOJI_MAP_PATH):
+        try:
+            with open(EMOJI_MAP_PATH, encoding="utf-8") as handle:
+                data = json.load(handle)
+            _emoji_map_cache = data if isinstance(data, dict) else {}
+            return _emoji_map_cache
+        except Exception as e:
+            print(f"Error loading emoji map: {e}")
+    _emoji_map_cache = {}
+    return _emoji_map_cache
+
+
+def save_emoji_map(mapping: Dict[str, str]) -> None:
+    global _emoji_map_cache
+    _emoji_map_cache = mapping
+    # Persist so a restart before guild cache is ready still has icons briefly
+    try:
+        with open(EMOJI_MAP_PATH, "w", encoding="utf-8") as handle:
+            json.dump(mapping, handle, indent=2, sort_keys=True)
+    except Exception as e:
+        print(f"Could not write emoji map: {e}")
+
+
+def emoji_names_for_setting(setting_name: str) -> list:
+    """Candidate guild emoji names for a setting label."""
+    names = []
+    primary = SETTING_EMOJI_NAMES.get(setting_name)
+    if primary:
+        names.append(primary)
+    for alt in SETTING_EMOJI_NAME_ALIASES.get(setting_name, ()):
+        if alt not in names:
+            names.append(alt)
+    return names
+
+
+def refresh_emoji_map_from_guild(guild) -> int:
+    """
+    Resolve setting icons from emojis already on the guild.
+    Returns how many settings were mapped. No uploads.
+    """
+    if guild is None:
+        return 0
+    by_name = {e.name: e for e in guild.emojis}
+    mapping: Dict[str, str] = {}
+    for family in (APPLE_AMOUNTS, SPEEDS, SIZES, GAMEMODES):
+        for setting_name, meta in family.items():
+            setting_id = meta.get("id")
+            if not setting_id:
+                continue
+            for emoji_name in emoji_names_for_setting(setting_name):
+                emoji = by_name.get(emoji_name)
+                if emoji is not None:
+                    mapping[setting_id] = str(emoji)
+                    break
+    save_emoji_map(mapping)
+    return len(mapping)
+
+
+def get_setting_icon_markup(setting_name: str, family: dict) -> str:
+    """Return custom emoji markup for a setting, or the plain name."""
+    meta = family.get(setting_name) or {}
+    setting_id = meta.get("id")
+    if setting_id:
+        emoji = load_emoji_map().get(setting_id)
+        if emoji:
+            return emoji
+    return setting_name
+
+
+def format_setting_with_icon(setting_name: str, family: dict) -> str:
+    """Icon (if mapped) plus label, e.g. '<:tally:123> Tally'."""
+    meta = family.get(setting_name) or {}
+    setting_id = meta.get("id")
+    emoji = load_emoji_map().get(setting_id) if setting_id else None
+    if emoji:
+        return f"{emoji} {setting_name}"
+    return setting_name
+
+
 def get_settings_key(apple_amount: str, speed: str, size: str, gamemode: str, run_mode: str = "25 Apples") -> str:
     """Generate a settings key for looking up records"""
     return f"{apple_amount}|{speed}|{size}|{gamemode}|{run_mode}"
 
-def format_category_key(settings_key: str) -> str:
-    """Format a settings key as readable category text."""
+
+def format_category_key(settings_key: str, with_icons: bool = True) -> str:
+    """Format a settings key as readable category text (optionally with Discord emojis)."""
     parts = settings_key.split('|')
     if len(parts) != 5:
         return settings_key
     apple_amount, speed, size, gamemode, run_mode = parts
+    if with_icons:
+        return (
+            f"{format_setting_with_icon(gamemode, GAMEMODES)} • "
+            f"{format_setting_with_icon(apple_amount, APPLE_AMOUNTS)} • "
+            f"{format_setting_with_icon(speed, SPEEDS)} • "
+            f"{format_setting_with_icon(size, SIZES)} • "
+            f"{run_mode}"
+        )
     return f"{gamemode} • {apple_amount} • {speed} • {size} • {run_mode}"
 
 def parse_time(time_str: str) -> str:
@@ -177,7 +335,7 @@ def validate_settings(apple_amount: str, speed: str, size: str, gamemode: str) -
 
 def get_ordered_apple_amounts() -> list:
     """Get ordered list of apple amounts"""
-    return ["1 Apple", "3 Apples", "5 Apples", "10 Apples", "Dice", "Bomb"]
+    return ["1 Apple", "3 Apples", "5 Apples", "10 Apples", "Dice", "Bomb", "Tally"]
 
 def get_ordered_speeds() -> list:
     """Get ordered list of speeds"""
@@ -196,10 +354,16 @@ def get_ordered_run_modes() -> list:
     return ["25 Apples", "50 Apples", "100 Apples", "All Apples", "High Score"]
 
 
-# Modes that have a High Score leaderboard (aligned with FastSnakeStats + community FAQ)
+# Modes that have a High Score leaderboard on main snake_game
 HIGHSCORE_MODES = frozenset({
     "Wall", "Portal", "Key", "Sokoban", "Poison", "Minesweeper",
     "Statue", "Shield", "Hotdog", "Gate", "Bridge",
+})
+
+# Modes whose Tally High Score lives on snake_game_ce (FastSnakeStats tally-boards.js)
+TALLY_CE_HIGHSCORE_MODES = frozenset({
+    "Classic", "Cheese", "Borderless", "Twin", "Winged", "Yin Yang",
+    "Dimension", "Light", "Arrow", "Magnet",
 })
 
 DIFFICULTY_TIERS = [
@@ -231,9 +395,9 @@ MODE_BASE_TIER = {
     "Bridge": "Medium",
 }
 
-_COUNT_MORE_EASIER = ["Bomb", "10 Apples", "5 Apples", "Dice", "3 Apples", "1 Apple"]
-_COUNT_LESS_EASIER = ["1 Apple", "3 Apples", "Dice", "5 Apples", "10 Apples", "Bomb"]
-_COUNT_POISON = ["1 Apple", "Dice", "3 Apples", "5 Apples", "10 Apples", "Bomb"]
+_COUNT_MORE_EASIER = ["Bomb", "10 Apples", "5 Apples", "Dice", "3 Apples", "1 Apple", "Tally"]
+_COUNT_LESS_EASIER = ["Tally", "1 Apple", "3 Apples", "Dice", "5 Apples", "10 Apples", "Bomb"]
+_COUNT_POISON = ["Tally", "1 Apple", "Dice", "3 Apples", "5 Apples", "10 Apples", "Bomb"]
 _COUNT_LESS_EASIER_MODES = frozenset({
     "Portal", "Key", "Sokoban", "Minesweeper", "Shield", "Hotdog",
 })
@@ -241,8 +405,20 @@ _APPLE_RUNS = ["25 Apples", "50 Apples", "100 Apples", "All Apples"]
 
 
 def is_high_score_mode(gamemode: str) -> bool:
-    """True if this mode can use the High Score run mode."""
+    """True if this mode has High Score on the main snake_game boards."""
     return gamemode in HIGHSCORE_MODES
+
+
+def is_tally_ce_highscore_mode(gamemode: str) -> bool:
+    """True if Tally High Score for this mode is on Category Extensions."""
+    return gamemode in TALLY_CE_HIGHSCORE_MODES
+
+
+def allows_high_score(apple_amount: str, gamemode: str) -> bool:
+    """Whether High Score exists for this count+mode (FSS shouldShowHighScoreColumn)."""
+    if is_high_score_mode(gamemode):
+        return True
+    return apple_amount == "Tally" and is_tally_ce_highscore_mode(gamemode)
 
 
 def is_valid_category(
@@ -265,8 +441,8 @@ def is_valid_category(
     # Yin Yang 50 on Small does not exist
     if gamemode == "Yin Yang" and run_mode == "50 Apples" and size == "Small":
         return False
-    # High Score only on high-score modes
-    if run_mode == "High Score" and not is_high_score_mode(gamemode):
+    # High Score only where FSS shows an HS column
+    if run_mode == "High Score" and not allows_high_score(apple_amount, gamemode):
         return False
     return True
 
@@ -293,7 +469,8 @@ def _effective_mode_tier(mode: str, size: str, speed: str, run: str, apple: str)
     if mode == "Peaceful":
         return "Free"
 
-    tier = MODE_BASE_TIER.get(mode, "Medium")
+    # Tally starts at Medium before other overrides (FSS analyzer)
+    tier = "Medium" if apple == "Tally" else MODE_BASE_TIER.get(mode, "Medium")
 
     if mode == "Wall" and run == "All Apples":
         if size in ("Standard", "Large") and speed == "Fast":
@@ -422,11 +599,10 @@ def enumerate_valid_categories() -> list:
                     for run in _APPLE_RUNS:
                         if is_valid_category(apple, speed, size, mode, run):
                             keys.append(get_settings_key(apple, speed, size, mode, run))
-                    if is_high_score_mode(mode):
-                        if is_valid_category(apple, speed, size, mode, "High Score"):
-                            keys.append(
-                                get_settings_key(apple, speed, size, mode, "High Score")
-                            )
+                    if is_valid_category(apple, speed, size, mode, "High Score"):
+                        keys.append(
+                            get_settings_key(apple, speed, size, mode, "High Score")
+                        )
     return keys
 
 

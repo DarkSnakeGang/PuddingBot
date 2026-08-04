@@ -122,6 +122,49 @@ class Admin(commands.Cog):
         return owner_id is not None and user_id == owner_id
 
     @app_commands.command(
+        name="sync-icons",
+        description="Refresh setting icon emoji map from this server (admin only)",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def sync_icons_command(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            await interaction.response.send_message(
+                "Run this in the server that has the setting emojis.",
+                ephemeral=True,
+            )
+            return
+
+        is_admin = (
+            isinstance(interaction.user, discord.Member)
+            and interaction.user.guild_permissions.administrator
+        )
+        if not (is_admin or self._is_owner(interaction.user.id)):
+            await interaction.response.send_message(
+                "You need the **Administrator** permission to run this command.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        import data_management as dm
+
+        mapped = dm.refresh_emoji_map_from_guild(interaction.guild)
+        expected = sum(
+            1
+            for family in (dm.APPLE_AMOUNTS, dm.SPEEDS, dm.SIZES, dm.GAMEMODES)
+            for meta in family.values()
+            if meta.get("id")
+        )
+        missing = expected - mapped
+        await interaction.followup.send(
+            f"Refreshed icons from this server.\n"
+            f"- Mapped: **{mapped}** / {expected}\n"
+            f"- Missing: **{missing}**\n"
+            f"(Also runs automatically on bot startup.)",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
         name="update",
         description="Pull latest code, sync Ollama model, and restart the bot",
     )
@@ -173,7 +216,7 @@ class Admin(commands.Cog):
                 return
 
             clean_result = await _run_command_async(
-                ["git", "clean", "-fd", "-e", ".env", "-e", ".env.*"],
+                ["git", "clean", "-fd", "-e", ".env", "-e", ".env.*", "-e", "emoji_map.json"],
                 timeout=60,
             )
             if clean_result.returncode != 0:
@@ -200,7 +243,6 @@ class Admin(commands.Cog):
                 )
                 return
 
-            # Sync Ollama model from new code/env (no container restart needed)
             model = _desired_ollama_model()
             ollama_ok, ollama_note = await _ensure_ollama_model(model, set_status)
             if not ollama_ok:

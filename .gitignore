@@ -1,3 +1,4 @@
 .env
+emoji_map.json
 __pycache__
 api_key

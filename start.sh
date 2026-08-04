@@ -18,7 +18,7 @@ if [ ! -d /app/.git ]; then
     git fetch origin "$GIT_BRANCH"
     # Force match remote even if Docker COPY left untracked files in /app
     git checkout -f -B "$GIT_BRANCH" "origin/$GIT_BRANCH"
-    git clean -fd -e .env -e '.env.*'
+    git clean -fd -e .env -e '.env.*' -e emoji_map.json
     echo "Repository initialized at $(git rev-parse --short HEAD)"
 fi
 
