@@ -214,7 +214,7 @@ def get_response(user_input: str, user="Nobody", status_notify=None) -> str:
     if "how" in lowered:
         if "timer" in lowered:
             return "<#968893937630736504>"
-        if "tas" in lowered:
+        if "tas" in lowered or "autoplay" in lowered:
             return "Read rule 10, <#995955083395215412>"
         if "many" in lowered and "patterns" in lowered and "wall" in lowered and "small" in lowered:
             return "So far we know of exactly 235,355,155 wall patterns in small board."
