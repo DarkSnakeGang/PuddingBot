@@ -51,6 +51,18 @@ POISON_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'po
 YIN_YANG_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'yin_yang.png')
 TALLY_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'tally.gif')
 SOFTLOCK_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'softlock.gif')
+BAD_RNG_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'bad_rng.png')
+# Always-fire phrase
+BAD_RNG_ALWAYS_RE: Final[re.Pattern[str]] = re.compile(r"\bbs\s+rng\b", re.IGNORECASE)
+# Complaints that RNG is bad (not bare "rng")
+BAD_RNG_COMPLAINT_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:"
+    r"\b(?:bad|awful|terrible|horrible|shit(?:ty)?|trash|garbage|bullshit|bs|cursed|rigged|unfair|worst|stupid|dumb|abysmal|dogshit)\s+rng\b"
+    r"|\brng\s+(?:is\s+)?(?:bad|awful|terrible|horrible|shit(?:ty)?|trash|garbage|bullshit|bs|cursed|rigged|unfair|worst|stupid|dumb|ass|abysmal|dogshit|sucks?)\b"
+    r"|\bbull\s*shit\s+rng\b"
+    r")",
+    re.IGNORECASE,
+)
 
 if not TOKEN:
     raise SystemExit(
@@ -279,6 +291,19 @@ async def on_message(message: Message) -> None:
             await message.channel.send(file=File(SOFTLOCK_ASSET, filename="softlock.gif"))
         except Exception as e:
             print(f"Failed to send softlock meme: {e}")
+
+    # Bad-RNG complaints: always for "bs rng", else 1/3 for similar phrases
+    if os.path.isfile(BAD_RNG_ASSET) and (
+        BAD_RNG_ALWAYS_RE.search(lowered_message)
+        or (
+            BAD_RNG_COMPLAINT_RE.search(lowered_message)
+            and random.randint(1, 3) == 1
+        )
+    ):
+        try:
+            await message.channel.send(file=File(BAD_RNG_ASSET, filename="bad_rng.png"))
+        except Exception as e:
+            print(f"Failed to send bad rng meme: {e}")
 
     if not (user_message.lower()[:3] == 'gif' and in_poi):
         await send_message(message, user_message, message.author.id)
