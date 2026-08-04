@@ -4,6 +4,7 @@ import random
 import re
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
+import discord
 from discord import Intents, Message, Object, NotFound, Forbidden, HTTPException, File
 from discord.ext import commands
 from responses import get_response, is_allowed_poi_message
@@ -109,17 +110,25 @@ async def send_message(message: Message, user_message: str, user="Nobody") -> No
 async def on_ready() -> None:
     print(f'{bot.user} is now running')
 
-    # Sync slash commands (guild sync is instant; global sync can take up to an hour)
+    # Sync slash/context commands.
+    # Global sync publishes the public Commands list (like esmBot's profile).
+    # Optional guild sync keeps the same set available instantly in the home server.
     try:
+        synced_global = await bot.tree.sync()
+        print(f"Synced {len(synced_global)} global command(s)")
+        print(
+            "Global commands:",
+            ", ".join(
+                f"/{cmd.name}" if cmd.type is discord.AppCommandType.chat_input else cmd.name
+                for cmd in synced_global
+            ),
+        )
+
         if GUILD_ID:
             guild = Object(id=int(GUILD_ID))
             bot.tree.copy_global_to(guild=guild)
-            synced = await bot.tree.sync(guild=guild)
-            print(f"Synced {len(synced)} guild command(s) to guild {GUILD_ID}")
-        else:
-            synced = await bot.tree.sync()
-            print(f"Synced {len(synced)} global command(s)")
-        print("Commands:", ", ".join(f"/{cmd.name}" for cmd in synced))
+            synced_guild = await bot.tree.sync(guild=guild)
+            print(f"Synced {len(synced_guild)} guild command(s) to guild {GUILD_ID}")
     except Exception as e:
         print(f"Error syncing commands: {e}")
 
