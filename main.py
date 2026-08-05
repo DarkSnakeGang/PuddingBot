@@ -191,10 +191,10 @@ async def on_message(message: Message) -> None:
         except Exception as e:
             print(f"Failed to send wall-all meme: {e}")
 
-    # 1/4 easter egg for "im going for ..." grind announcements
+    # 1/16 easter egg for "im going for ..." grind announcements
     if (
         any(trigger in lowered_message for trigger in GOING_FOR_TRIGGERS)
-        and random.randint(1, 4) == 1
+        and random.randint(1, 16) == 1
         and os.path.isfile(OFF_WORK_ASSET)
     ):
         try:
@@ -246,10 +246,10 @@ async def on_message(message: Message) -> None:
         except Exception as e:
             print(f"Failed to send pattern meme: {e}")
 
-    # 1/5 easter egg when someone says "count count"
+    # 1/16 easter egg when someone says "count count"
     if (
         "count count" in lowered_message
-        and random.randint(1, 5) == 1
+        and random.randint(1, 16) == 1
         and os.path.isfile(COUNT_COUNT_ASSET)
     ):
         try:
@@ -257,10 +257,10 @@ async def on_message(message: Message) -> None:
         except Exception as e:
             print(f"Failed to send count count meme: {e}")
 
-    # 1/6 easter egg when poison is mentioned
+    # 1/16 easter egg when poison is mentioned
     if (
         re.search(r"\bpoison\b", lowered_message)
-        and random.randint(1, 6) == 1
+        and random.randint(1, 16) == 1
         and os.path.isfile(POISON_ASSET)
     ):
         try:
@@ -296,10 +296,10 @@ async def on_message(message: Message) -> None:
             except Exception as e:
                 print(f"Failed to send tally meme: {e}")
 
-    # 1/3 easter egg when softlock is mentioned
+    # 1/16 easter egg when softlock is mentioned
     if (
         re.search(r"\bsoftlock\b", lowered_message)
-        and random.randint(1, 3) == 1
+        and random.randint(1, 16) == 1
         and os.path.isfile(SOFTLOCK_ASSET)
     ):
         try:
@@ -307,13 +307,14 @@ async def on_message(message: Message) -> None:
         except Exception as e:
             print(f"Failed to send softlock meme: {e}")
 
-    # Bad-RNG complaints: always for "bs rng", else 1/3 for similar phrases
-    if os.path.isfile(BAD_RNG_ASSET) and (
-        BAD_RNG_ALWAYS_RE.search(lowered_message)
-        or (
-            BAD_RNG_COMPLAINT_RE.search(lowered_message)
-            and random.randint(1, 3) == 1
+    # 1/16 easter egg for bad-RNG complaints (including "bs rng")
+    if (
+        os.path.isfile(BAD_RNG_ASSET)
+        and (
+            BAD_RNG_ALWAYS_RE.search(lowered_message)
+            or BAD_RNG_COMPLAINT_RE.search(lowered_message)
         )
+        and random.randint(1, 16) == 1
     ):
         try:
             await message.channel.send(file=File(BAD_RNG_ASSET, filename="bad_rng.png"))

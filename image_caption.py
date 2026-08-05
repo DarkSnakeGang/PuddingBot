@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont, ImageSequence
 
 FONT_PATH = os.path.join(
-    os.path.dirname(__file__), "assets", "fonts", "DejaVuSans-Bold.ttf"
+    os.path.dirname(__file__), "assets", "fonts", "caption.otf"
 )
 
 # Discord upload safety margin
