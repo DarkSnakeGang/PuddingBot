@@ -279,10 +279,10 @@ async def on_message(message: Message) -> None:
         except Exception as e:
             print(f"Failed to send yin yang meme: {e}")
 
-    # 1/5 easter egg when tally is mentioned (50/50 between two memes)
+    # 1/16 easter egg when tally is mentioned (50/50 between two memes)
     if (
         re.search(r"\btally\b", lowered_message)
-        and random.randint(1, 5) == 1
+        and random.randint(1, 16) == 1
     ):
         tally_choices = [
             (TALLY_ASSET, "tally.gif"),
