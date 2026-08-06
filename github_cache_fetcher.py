@@ -495,6 +495,13 @@ class GitHubCacheFetcher:
             return None
         return data.get('stale') or []
 
+    async def get_career(self) -> Optional[List[Dict]]:
+        """Get career WR-days leaderboard rows."""
+        data = await self.fetch_statistics_explorer()
+        if not data:
+            return None
+        return data.get('career') or []
+
     async def get_unicorns(self) -> Optional[List[Dict]]:
         """Get Lottery-tier unicorn holds (present and past)."""
         data = await self.fetch_statistics_explorer()

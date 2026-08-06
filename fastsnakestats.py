@@ -138,6 +138,7 @@ class FastSnakeStats(commands.Cog):
                     return None
                 return {
                     'player_name': display_name,
+                    'player_id': player_id,
                     'world_records_held': 0,
                     'current_percentage': 0.0,
                     'total_world_records': total_world_records,
@@ -154,6 +155,7 @@ class FastSnakeStats(commands.Cog):
             
             return {
                 'player_name': display_name,
+                'player_id': player_id,
                 'world_records_held': total_runs,
                 'current_percentage': current_pct,
                 'total_world_records': total_world_records,
@@ -425,6 +427,7 @@ class FastSnakeStats(commands.Cog):
     async def _get_longevity_items(
         self,
         mode: str = "standing",
+        tied: Optional[str] = None,
         game_mode: Optional[str] = None,
         apple_amount: Optional[str] = None,
         speed: Optional[str] = None,
@@ -439,24 +442,12 @@ class FastSnakeStats(commands.Cog):
             size=size,
             run_mode=run_mode,
         )
-        if not self._any_category_filters(**filters):
-            return await github_cache_fetcher.get_longevity(mode)
-
-        explorer = await github_cache_fetcher.fetch_statistics_explorer()
-        if not explorer:
+        items = await github_cache_fetcher.get_longevity(mode)
+        if items is None:
             return None
-        progression = explorer.get("progression") or {}
-        latest = ((explorer.get("meta") or {}).get("dateRange") or {}).get("latest")
-        if not latest:
-            latest = datetime.now().strftime("%Y-%m-%d")
-        items, _ = self._longevity_snapshot_from_progression(
-            progression,
-            latest,
-            limit=limit,
-            standing_only=(mode == "standing"),
-            **filters,
-        )
-        return items
+        items = self._filter_category_rows(items, **filters)
+        items = self._filter_longevity_tied(items, tied)
+        return items[:limit]
 
     def _format_hold_duration(self, start: str, end: str) -> str:
         """Human duration like '5 years, 4 months and 23 days'."""
@@ -842,6 +833,13 @@ class FastSnakeStats(commands.Cog):
         self, interaction: discord.Interaction, current: str
     ) -> List[app_commands.Choice[str]]:
         return self._filter_setting_choices(dm.get_ordered_run_modes(), current)
+
+    async def list_run_mode_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        """Run modes for explorer list filters, including Timed (all non-HS)."""
+        options = ["Timed"] + dm.get_ordered_run_modes()
+        return self._filter_setting_choices(options, current)
     
     def get_random_combination(
         self,
@@ -978,6 +976,10 @@ class FastSnakeStats(commands.Cog):
         if career:
             if career.get('wrDays') is not None:
                 lines.append(f"**WR-days:** {career['wrDays']}")
+            if career.get('wrDaysUntied') is not None:
+                lines.append(f"**Untied WR-days:** {career['wrDaysUntied']}")
+            if career.get('wrDaysTied') is not None:
+                lines.append(f"**Tied WR-days:** {career['wrDaysTied']}")
             if career.get('holds') is not None:
                 lines.append(f"**Holds:** {career['holds']}")
             if career.get('standingHolds') is not None:
@@ -1518,11 +1520,15 @@ class FastSnakeStats(commands.Cog):
             'apple_amount': apple_amount,
             'speed': speed,
             'size': size,
-            'run_mode': run_mode,
         }
         for key, value in checks.items():
             if value and parts[key] != value:
                 return False
+        if run_mode == "Timed":
+            if parts['run_mode'] == "High Score":
+                return False
+        elif run_mode and parts['run_mode'] != run_mode:
+            return False
         return True
 
     def _format_category_filters(
@@ -1532,8 +1538,17 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        tied: Optional[str] = None,
+        show: Optional[str] = None,
+        holds: Optional[str] = None,
     ) -> str:
         bits = [v for v in (game_mode, apple_amount, speed, size, run_mode) if v]
+        if tied and tied != "all":
+            bits.append(f"{tied} only")
+        if show and show != "all":
+            bits.append(show)
+        if holds:
+            bits.append(f"holds:{holds}")
         return " • ".join(bits)
 
     def _any_category_filters(
@@ -1568,6 +1583,111 @@ class FastSnakeStats(commands.Cog):
                 run_mode=run_mode,
             )
         ]
+
+    def _filter_longevity_tied(self, items: List[Dict], tied: Optional[str] = None) -> List[Dict]:
+        """Match FastSnakeStats longevity/career tied chips (missing tiedHolders => 1)."""
+        if not tied or tied == "all":
+            return items
+        if tied == "untied":
+            return [item for item in items if (item.get("tiedHolders") or 1) <= 1]
+        if tied == "tied":
+            return [item for item in items if (item.get("tiedHolders") or 1) > 1]
+        return items
+
+    def _filter_popularity_tied(self, items: List[Dict], tied: Optional[str] = None) -> List[Dict]:
+        """Match FastSnakeStats popularity Both/Untied/Tied (0 = unheld present WR)."""
+        if not tied or tied == "all":
+            return items
+        if tied == "untied":
+            return [item for item in items if (item.get("tiedHolders") or 0) == 1]
+        if tied == "tied":
+            return [item for item in items if (item.get("tiedHolders") or 0) > 1]
+        return items
+
+    def _career_metrics(self, row: Dict, tied: Optional[str] = None) -> Dict:
+        """Pick WR-days / best-hold fields for career tied mode."""
+        if tied == "untied":
+            return {
+                "wrDays": row.get("wrDaysUntied") or 0,
+                "bestAll": row.get("bestAllUntied"),
+                "bestStanding": row.get("bestStandingUntied"),
+            }
+        if tied == "tied":
+            return {
+                "wrDays": row.get("wrDaysTied") or 0,
+                "bestAll": row.get("bestAllTied"),
+                "bestStanding": row.get("bestStandingTied"),
+            }
+        return {
+            "wrDays": row.get("wrDays") or 0,
+            "bestAll": row.get("bestAll"),
+            "bestStanding": row.get("bestStanding"),
+        }
+
+    async def _get_player_hold_items(
+        self,
+        player_id: Optional[str] = None,
+        player_name: Optional[str] = None,
+        holds: str = "all",
+        tied: Optional[str] = None,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+    ) -> Optional[List[Dict]]:
+        """Player hold history from longevity.all (FastSnakeStats Player tab)."""
+        longevity = await github_cache_fetcher.get_longevity("all")
+        if longevity is None:
+            return None
+        name_lower = (player_name or "").lower().strip()
+        rows = []
+        for row in longevity:
+            if player_id and row.get("playerId") == player_id:
+                rows.append(row)
+            elif name_lower and (row.get("playerName") or "").lower() == name_lower:
+                rows.append(row)
+
+        hold_mode = holds or "all"
+        if hold_mode == "present":
+            rows = [r for r in rows if r.get("stillStanding")]
+            rows = self._filter_longevity_tied(rows, tied)
+        elif hold_mode == "old":
+            rows = [r for r in rows if not r.get("stillStanding")]
+        # all / latest keep every hold
+
+        rows = self._filter_category_rows(
+            rows,
+            game_mode=game_mode,
+            apple_amount=apple_amount,
+            speed=speed,
+            size=size,
+            run_mode=run_mode,
+        )
+
+        if hold_mode == "old":
+            rows.sort(
+                key=lambda r: (
+                    str(r.get("end") or ""),
+                    r.get("days") or 0,
+                    str(r.get("start") or ""),
+                ),
+                reverse=True,
+            )
+        elif hold_mode == "latest":
+            rows.sort(
+                key=lambda r: (
+                    str(r.get("start") or ""),
+                    1 if r.get("stillStanding") else 0,
+                    r.get("days") or 0,
+                ),
+                reverse=True,
+            )
+        else:
+            rows.sort(
+                key=lambda r: (-(r.get("days") or 0), str(r.get("start") or ""))
+            )
+        return rows
 
     async def _build_ranked_category_lists_from_progression(
         self,
@@ -1643,23 +1763,72 @@ class FastSnakeStats(commands.Cog):
             'stale': stale[:limit],
         }
 
-    async def _get_contested_items(self, **filters) -> Optional[List[Dict]]:
-        if not self._any_category_filters(**filters):
-            return await github_cache_fetcher.get_contested()
-        built = await self._build_ranked_category_lists_from_progression(**filters)
-        return None if built is None else built['contested']
+    async def _get_contested_items(self, limit: int = 50, **filters) -> Optional[List[Dict]]:
+        items = await github_cache_fetcher.get_contested()
+        if items is None:
+            return None
+        if self._any_category_filters(**filters):
+            items = self._filter_category_rows(items, **filters)
+        return items[:limit]
 
-    async def _get_popularity_items(self, **filters) -> Optional[List[Dict]]:
-        if not self._any_category_filters(**filters):
-            return await github_cache_fetcher.get_popularity()
-        built = await self._build_ranked_category_lists_from_progression(**filters)
-        return None if built is None else built['popularity']
+    async def _get_popularity_items(
+        self, tied: Optional[str] = None, limit: int = 50, **filters
+    ) -> Optional[List[Dict]]:
+        items = await github_cache_fetcher.get_popularity()
+        if items is None:
+            return None
+        if self._any_category_filters(**filters):
+            items = self._filter_category_rows(items, **filters)
+        items = self._filter_popularity_tied(items, tied)
+        return items[:limit]
 
-    async def _get_stale_items(self, **filters) -> Optional[List[Dict]]:
-        if not self._any_category_filters(**filters):
-            return await github_cache_fetcher.get_stale()
-        built = await self._build_ranked_category_lists_from_progression(**filters)
-        return None if built is None else built['stale']
+    async def _get_stale_items(self, limit: int = 50, **filters) -> Optional[List[Dict]]:
+        items = await github_cache_fetcher.get_stale()
+        if items is None:
+            return None
+        if self._any_category_filters(**filters):
+            items = self._filter_category_rows(items, **filters)
+        return items[:limit]
+
+    async def _get_legends_items(
+        self,
+        show: str = "all",
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+    ) -> Optional[List[Dict]]:
+        """Merged Legends + Unicorns list matching FastSnakeStats Show filter."""
+        legends = await github_cache_fetcher.get_legends()
+        unicorns = await github_cache_fetcher.get_unicorns()
+        if legends is None and unicorns is None:
+            return None
+        tagged: List[Dict] = []
+        if show in ("all", "legends"):
+            for row in legends or []:
+                tagged.append({**row, "legendType": "Legend"})
+        if show in ("all", "unicorns"):
+            for row in unicorns or []:
+                tagged.append({**row, "legendType": "Unicorn"})
+        tagged = self._filter_category_rows(
+            tagged,
+            game_mode=game_mode,
+            apple_amount=apple_amount,
+            speed=speed,
+            size=size,
+            run_mode=run_mode,
+        )
+        if show == "all":
+            tagged.sort(
+                key=lambda r: (
+                    -(r.get("score") or 0),
+                    0 if r.get("stillStanding") else 1,
+                    -(r.get("days") or 0),
+                    str(r.get("start") or ""),
+                )
+            )
+        return tagged
 
     def create_contested_embed(
         self, items: List[Dict], page: int = 0, filter_label: str = ""
@@ -1771,49 +1940,138 @@ class FastSnakeStats(commands.Cog):
         )
 
     def create_unicorns_embed(self, items: List[Dict], page: int = 0) -> discord.Embed:
+        return self.create_legends_embed(items, page=page, show="unicorns")
+
+    def create_legends_embed(
+        self, items: List[Dict], page: int = 0, show: str = "legends", filter_label: str = ""
+    ) -> discord.Embed:
         items_per_page = 5
         total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
         start = page * items_per_page
         page_items = items[start:start + items_per_page]
 
+        if show == "unicorns":
+            title = "🦄 Unicorns — Lottery Holds"
+            description = "Lottery-tier category holds (still standing first)"
+            color = 0xe91e63
+        elif show == "all":
+            title = "🏆 Legends — Mythic + Lottery"
+            description = "Mythic and Lottery holds (hardest first)"
+            color = 0x9b59b6
+        else:
+            title = "🏆 Legends — Mythic Holds"
+            description = "Mythic-tier category holds (hardest first)"
+            color = 0x9b59b6
+        if filter_label:
+            title += f" — {filter_label}"
+
         embed = discord.Embed(
-            title="🦄 Unicorns — Lottery Holds",
-            description="Lottery-tier category holds (still standing first)",
-            color=0xe91e63,
+            title=title,
+            description=description,
+            color=color,
             timestamp=datetime.now()
         )
-        lines = [
-            self._format_achievement_hold_line(i, item)
-            for i, item in enumerate(page_items, start + 1)
-        ]
+        lines = []
+        for i, item in enumerate(page_items, start + 1):
+            line = self._format_achievement_hold_line(i, item)
+            legend_type = item.get("legendType")
+            if show == "all" and legend_type:
+                line += f" • *{legend_type}*"
+            lines.append(line)
         embed.add_field(
             name="Holders",
-            value="\n".join(lines) if lines else "No unicorn data.",
+            value="\n".join(lines) if lines else "No legend data.",
             inline=False
         )
         embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
         return embed
 
-    def create_legends_embed(self, items: List[Dict], page: int = 0) -> discord.Embed:
+    def create_career_embed(
+        self, items: List[Dict], tied: str = "all", page: int = 0
+    ) -> discord.Embed:
+        items_per_page = 10
+        total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_items = items[start:start + items_per_page]
+        tied_label = {
+            "all": "All holds",
+            "untied": "Untied only",
+            "tied": "Tied only",
+        }.get(tied, "All holds")
+
+        embed = discord.Embed(
+            title=f"📚 Career WR-days — {tied_label}",
+            description="Players ranked by total days holding a world record",
+            color=0x1abc9c,
+            timestamp=datetime.now(),
+        )
+        lines = []
+        for i, item in enumerate(page_items, start + 1):
+            best = item.get("bestAll") or {}
+            best_bits = ""
+            if best.get("days") is not None:
+                best_bits = (
+                    f" • best {best.get('days')}d "
+                    f"({self._format_category_line(best.get('category', ''))})"
+                )
+            lines.append(
+                f"{i}. **{item.get('playerName', 'Unknown')}** — "
+                f"**{item.get('wrDays', 0)}** WR-days{best_bits}"
+            )
+        embed.add_field(
+            name="Top Careers",
+            value="\n".join(lines) if lines else "No career data.",
+            inline=False,
+        )
+        embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
+        return embed
+
+    def create_player_holds_embed(
+        self,
+        player_name: str,
+        items: List[Dict],
+        holds: str = "all",
+        page: int = 0,
+        filter_label: str = "",
+    ) -> discord.Embed:
         items_per_page = 5
         total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
         start = page * items_per_page
         page_items = items[start:start + items_per_page]
+        mode_label = {
+            "all": "All holds",
+            "present": "Present holds",
+            "old": "Old holds",
+            "latest": "Latest activity",
+        }.get(holds, "All holds")
+        title = f"👤 {player_name} — {mode_label}"
+        if filter_label:
+            title += f" — {filter_label}"
+        sort_hint = {
+            "old": "most recently taken first",
+            "latest": "newest acquired first",
+        }.get(holds, "longest first")
 
         embed = discord.Embed(
-            title="🏆 Legends — Mythic Holds",
-            description="Mythic-tier category holds (hardest first)",
-            color=0x9b59b6,
-            timestamp=datetime.now()
+            title=title,
+            description=f"{len(items)} hold{'s' if len(items) != 1 else ''} · {sort_hint}",
+            color=0x0099ff,
+            timestamp=datetime.now(),
         )
-        lines = [
-            self._format_achievement_hold_line(i, item)
-            for i, item in enumerate(page_items, start + 1)
-        ]
+        lines = []
+        for i, item in enumerate(page_items, start + 1):
+            standing = " • still standing" if item.get("stillStanding") else ""
+            end_label = "present" if item.get("stillStanding") else item.get("end", "?")
+            lines.append(
+                f"{i}. **{item.get('days', '?')} days** — "
+                f"{self._format_category_line(item.get('category', ''))} — "
+                f"{self._format_linked_hold_time(item)} • "
+                f"{item.get('start', '?')} → {end_label}{standing}"
+            )
         embed.add_field(
-            name="Holders",
-            value="\n".join(lines) if lines else "No legend data.",
-            inline=False
+            name="Holds",
+            value="\n".join(lines) if lines else "No holds match these filters.",
+            inline=False,
         )
         embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
         return embed
@@ -2053,19 +2311,108 @@ class FastSnakeStats(commands.Cog):
     
     @app_commands.command(
         name="player",
-        description="Player profile: WRs, career, peaks, longevity, improving, holds",
+        description="Player profile, or explorer hold history with holds=…",
     )
     @app_commands.describe(
         player_name="Player name to look up",
-        date="Historical date - optional"
+        date="Historical date - optional (profile snapshot)",
+        holds="Explorer hold list mode (omitted = profile)",
+        tied="Tied filter for present holds only",
+        game_mode="Optional game mode filter (holds list)",
+        apple_amount="Optional apple count filter (holds list)",
+        speed="Optional speed filter (holds list)",
+        size="Optional size filter (holds list)",
+        run_mode="Optional run mode filter; Timed = non-HS (holds list)",
     )
-    @app_commands.autocomplete(date=player_date_autocomplete)
-    async def player_command(self, interaction: discord.Interaction, player_name: str, date: Optional[str] = None):
+    @app_commands.choices(
+        holds=[
+            app_commands.Choice(name="All holds", value="all"),
+            app_commands.Choice(name="Present", value="present"),
+            app_commands.Choice(name="Old", value="old"),
+            app_commands.Choice(name="Latest activity", value="latest"),
+        ],
+        tied=[
+            app_commands.Choice(name="All holds", value="all"),
+            app_commands.Choice(name="Untied only", value="untied"),
+            app_commands.Choice(name="Tied only", value="tied"),
+        ],
+    )
+    @app_commands.autocomplete(
+        date=player_date_autocomplete,
+        game_mode=record_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+        run_mode=list_run_mode_autocomplete,
+    )
+    async def player_command(
+        self,
+        interaction: discord.Interaction,
+        player_name: str,
+        date: Optional[str] = None,
+        holds: Optional[app_commands.Choice[str]] = None,
+        tied: Optional[app_commands.Choice[str]] = None,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+    ):
         """Get player statistics and recent activity"""
         await interaction.response.defer()
         
         try:
-            # Get player data
+            hold_mode = holds.value if holds else None
+            if hold_mode:
+                peak_stats = await github_cache_fetcher.get_player_peak_stats(player_name)
+                display_name = (peak_stats or {}).get("name") or player_name
+                player_id = (peak_stats or {}).get("id")
+                tied_mode = tied.value if tied else "all"
+                if hold_mode != "present":
+                    tied_mode = "all"
+                filters = dict(
+                    game_mode=game_mode,
+                    apple_amount=apple_amount,
+                    speed=speed,
+                    size=size,
+                    run_mode=run_mode,
+                )
+                filter_label = self._format_category_filters(
+                    **filters, tied=tied_mode if hold_mode == "present" else None
+                )
+                items = await self._get_player_hold_items(
+                    player_id=player_id,
+                    player_name=display_name,
+                    holds=hold_mode,
+                    tied=tied_mode,
+                    **filters,
+                )
+                if items is None:
+                    await interaction.followup.send("❌ Player hold data unavailable.")
+                    return
+                if not items:
+                    suffix = f" for `{filter_label}`" if filter_label else ""
+                    await interaction.followup.send(
+                        f"❌ No holds found for **{display_name}**{suffix}."
+                    )
+                    return
+                embed = self.create_player_holds_embed(
+                    display_name, items, hold_mode, page=0, filter_label=filter_label
+                )
+                total_pages = max(1, (len(items) + 4) // 5)
+                if total_pages > 1:
+                    view = ListPaginationView(
+                        interaction.user.id,
+                        total_pages,
+                        lambda page: self.create_player_holds_embed(
+                            display_name, items, hold_mode, page, filter_label
+                        ),
+                    )
+                    await interaction.followup.send(embed=embed, view=view)
+                else:
+                    await interaction.followup.send(embed=embed)
+                return
+
             player_data = await self.get_player_data(player_name, date)
             
             if not player_data:
@@ -2075,12 +2422,10 @@ class FastSnakeStats(commands.Cog):
                     await interaction.followup.send(f"❌ No data found for player: {player_name}")
                 return
             
-            # Create embed with pagination
             embed = self.create_player_embed(player_data, page=0)
             
-            # Create view with pagination buttons (only if multiple pages)
             activity_len = len(player_data.get('recent_activity') or [])
-            total_pages = max(1, (activity_len + 4) // 5)  # 5 runs per page
+            total_pages = max(1, (activity_len + 4) // 5)
             if total_pages > 1:
                 view = PlayerPaginationView(
                     player_data,
@@ -2391,27 +2736,36 @@ class FastSnakeStats(commands.Cog):
     @app_commands.command(name="longevity", description="Longest-held world records")
     @app_commands.describe(
         filter="all = all-time holds, standing = still unbroken",
+        tied="All / untied-only / tied-only holds",
         game_mode="Optional game mode filter",
         apple_amount="Optional apple count filter",
         speed="Optional speed filter",
         size="Optional size filter",
-        run_mode="Optional run mode filter",
+        run_mode="Optional run mode filter; Timed = all non-High Score",
     )
-    @app_commands.choices(filter=[
-        app_commands.Choice(name="Still standing", value="standing"),
-        app_commands.Choice(name="All-time", value="all"),
-    ])
+    @app_commands.choices(
+        filter=[
+            app_commands.Choice(name="Still standing", value="standing"),
+            app_commands.Choice(name="All-time", value="all"),
+        ],
+        tied=[
+            app_commands.Choice(name="All holds", value="all"),
+            app_commands.Choice(name="Untied only", value="untied"),
+            app_commands.Choice(name="Tied only", value="tied"),
+        ],
+    )
     @app_commands.autocomplete(
         game_mode=record_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
-        run_mode=record_run_mode_autocomplete,
+        run_mode=list_run_mode_autocomplete,
     )
     async def longevity_command(
         self,
         interaction: discord.Interaction,
         filter: Optional[app_commands.Choice[str]] = None,
+        tied: Optional[app_commands.Choice[str]] = None,
         game_mode: Optional[str] = None,
         apple_amount: Optional[str] = None,
         speed: Optional[str] = None,
@@ -2421,6 +2775,7 @@ class FastSnakeStats(commands.Cog):
         await interaction.response.defer()
         try:
             filter_mode = filter.value if filter else "standing"
+            tied_mode = tied.value if tied else "all"
             filters = dict(
                 game_mode=game_mode,
                 apple_amount=apple_amount,
@@ -2428,8 +2783,10 @@ class FastSnakeStats(commands.Cog):
                 size=size,
                 run_mode=run_mode,
             )
-            filter_label = self._format_category_filters(**filters)
-            items = await self._get_longevity_items(mode=filter_mode, **filters)
+            filter_label = self._format_category_filters(**filters, tied=tied_mode)
+            items = await self._get_longevity_items(
+                mode=filter_mode, tied=tied_mode, **filters
+            )
             if items is None:
                 await interaction.followup.send("❌ Longevity data unavailable.")
                 return
@@ -2502,14 +2859,14 @@ class FastSnakeStats(commands.Cog):
         apple_amount="Optional apple count filter",
         speed="Optional speed filter",
         size="Optional size filter",
-        run_mode="Optional run mode filter",
+        run_mode="Optional run mode filter; Timed = all non-High Score",
     )
     @app_commands.autocomplete(
         game_mode=record_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
-        run_mode=record_run_mode_autocomplete,
+        run_mode=list_run_mode_autocomplete,
     )
     async def contested_command(
         self,
@@ -2556,22 +2913,29 @@ class FastSnakeStats(commands.Cog):
 
     @app_commands.command(name="popularity", description="Categories with the most unique WR holders")
     @app_commands.describe(
+        tied="Both / untied / tied present WRs",
         game_mode="Optional game mode filter",
         apple_amount="Optional apple count filter",
         speed="Optional speed filter",
         size="Optional size filter",
-        run_mode="Optional run mode filter",
+        run_mode="Optional run mode filter; Timed = all non-High Score",
     )
+    @app_commands.choices(tied=[
+        app_commands.Choice(name="Both", value="all"),
+        app_commands.Choice(name="Untied", value="untied"),
+        app_commands.Choice(name="Tied", value="tied"),
+    ])
     @app_commands.autocomplete(
         game_mode=record_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
-        run_mode=record_run_mode_autocomplete,
+        run_mode=list_run_mode_autocomplete,
     )
     async def popularity_command(
         self,
         interaction: discord.Interaction,
+        tied: Optional[app_commands.Choice[str]] = None,
         game_mode: Optional[str] = None,
         apple_amount: Optional[str] = None,
         speed: Optional[str] = None,
@@ -2580,6 +2944,7 @@ class FastSnakeStats(commands.Cog):
     ):
         await interaction.response.defer()
         try:
+            tied_mode = tied.value if tied else "all"
             filters = dict(
                 game_mode=game_mode,
                 apple_amount=apple_amount,
@@ -2587,8 +2952,8 @@ class FastSnakeStats(commands.Cog):
                 size=size,
                 run_mode=run_mode,
             )
-            filter_label = self._format_category_filters(**filters)
-            items = await self._get_popularity_items(**filters)
+            filter_label = self._format_category_filters(**filters, tied=tied_mode)
+            items = await self._get_popularity_items(tied=tied_mode, **filters)
             if items is None:
                 await interaction.followup.send("❌ Popularity data unavailable.")
                 return
@@ -2621,14 +2986,14 @@ class FastSnakeStats(commands.Cog):
         apple_amount="Optional apple count filter",
         speed="Optional speed filter",
         size="Optional size filter",
-        run_mode="Optional run mode filter",
+        run_mode="Optional run mode filter; Timed = all non-High Score",
     )
     @app_commands.autocomplete(
         game_mode=record_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
-        run_mode=record_run_mode_autocomplete,
+        run_mode=list_run_mode_autocomplete,
     )
     async def stale_command(
         self,
@@ -2674,27 +3039,122 @@ class FastSnakeStats(commands.Cog):
             await interaction.followup.send("❌ An error occurred while fetching stale categories.")
 
     @app_commands.command(
-        name="unicorns",
-        description="Lottery-tier unicorn category holds",
+        name="career",
+        description="Career WR-days leaderboard (all / untied / tied holds)",
     )
-    async def unicorns_command(self, interaction: discord.Interaction):
+    @app_commands.describe(tied="All holds, untied-only, or tied-only WR-days")
+    @app_commands.choices(tied=[
+        app_commands.Choice(name="All holds", value="all"),
+        app_commands.Choice(name="Untied only", value="untied"),
+        app_commands.Choice(name="Tied only", value="tied"),
+    ])
+    async def career_command(
+        self,
+        interaction: discord.Interaction,
+        tied: Optional[app_commands.Choice[str]] = None,
+    ):
         await interaction.response.defer()
         try:
-            items = await github_cache_fetcher.get_unicorns()
+            tied_mode = tied.value if tied else "all"
+            rows = await github_cache_fetcher.get_career()
+            if rows is None:
+                await interaction.followup.send("❌ Career data unavailable.")
+                return
+            items = []
+            for row in rows:
+                metrics = self._career_metrics(row, tied_mode)
+                if metrics["wrDays"] <= 0 and not metrics["bestAll"] and not metrics["bestStanding"]:
+                    continue
+                items.append({
+                    "playerId": row.get("playerId"),
+                    "playerName": row.get("playerName"),
+                    "wrDays": metrics["wrDays"],
+                    "bestAll": metrics["bestAll"],
+                    "bestStanding": metrics["bestStanding"],
+                })
+            items.sort(
+                key=lambda r: (
+                    -(r.get("wrDays") or 0),
+                    str(r.get("playerName") or ""),
+                )
+            )
+            items = items[:50]
+            if not items:
+                await interaction.followup.send("❌ No career entries for that tied filter.")
+                return
+
+            embed = self.create_career_embed(items, tied=tied_mode, page=0)
+            total_pages = max(1, (len(items) + 9) // 10)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_career_embed(items, tied_mode, page),
+                )
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in career command: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching career data.")
+
+    @app_commands.command(
+        name="unicorns",
+        description="Lottery-tier unicorn category holds (alias of /legends show:unicorns)",
+    )
+    @app_commands.describe(
+        game_mode="Optional game mode filter",
+        apple_amount="Optional apple count filter",
+        speed="Optional speed filter",
+        size="Optional size filter",
+        run_mode="Optional run mode filter; Timed = all non-High Score",
+    )
+    @app_commands.autocomplete(
+        game_mode=record_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+        run_mode=list_run_mode_autocomplete,
+    )
+    async def unicorns_command(
+        self,
+        interaction: discord.Interaction,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+    ):
+        await interaction.response.defer()
+        try:
+            filters = dict(
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+                run_mode=run_mode,
+            )
+            filter_label = self._format_category_filters(**filters)
+            items = await self._get_legends_items(show="unicorns", **filters)
             if items is None:
                 await interaction.followup.send("❌ Unicorns data unavailable.")
                 return
             if not items:
-                await interaction.followup.send("❌ No unicorn holds found.")
+                suffix = f" for `{filter_label}`" if filter_label else ""
+                await interaction.followup.send(f"❌ No unicorn holds found{suffix}.")
                 return
 
-            embed = self.create_unicorns_embed(items, page=0)
+            embed = self.create_legends_embed(
+                items, page=0, show="unicorns", filter_label=filter_label
+            )
             total_pages = max(1, (len(items) + 4) // 5)
             if total_pages > 1:
                 view = ListPaginationView(
                     interaction.user.id,
                     total_pages,
-                    lambda page: self.create_unicorns_embed(items, page),
+                    lambda page: self.create_legends_embed(
+                        items, page, "unicorns", filter_label
+                    ),
                 )
                 await interaction.followup.send(embed=embed, view=view)
             else:
@@ -2705,26 +3165,69 @@ class FastSnakeStats(commands.Cog):
 
     @app_commands.command(
         name="legends",
-        description="Mythic-tier legend category holds",
+        description="Mythic/Lottery holds (Show: All / Legends / Unicorns)",
     )
-    async def legends_command(self, interaction: discord.Interaction):
+    @app_commands.describe(
+        show="All (merged), Legends only, or Unicorns only",
+        game_mode="Optional game mode filter",
+        apple_amount="Optional apple count filter",
+        speed="Optional speed filter",
+        size="Optional size filter",
+        run_mode="Optional run mode filter; Timed = all non-High Score",
+    )
+    @app_commands.choices(show=[
+        app_commands.Choice(name="All", value="all"),
+        app_commands.Choice(name="Legends", value="legends"),
+        app_commands.Choice(name="Unicorns", value="unicorns"),
+    ])
+    @app_commands.autocomplete(
+        game_mode=record_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+        run_mode=list_run_mode_autocomplete,
+    )
+    async def legends_command(
+        self,
+        interaction: discord.Interaction,
+        show: Optional[app_commands.Choice[str]] = None,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+    ):
         await interaction.response.defer()
         try:
-            items = await github_cache_fetcher.get_legends()
+            show_mode = show.value if show else "all"
+            filters = dict(
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+                run_mode=run_mode,
+            )
+            filter_label = self._format_category_filters(**filters)
+            items = await self._get_legends_items(show=show_mode, **filters)
             if items is None:
                 await interaction.followup.send("❌ Legends data unavailable.")
                 return
             if not items:
-                await interaction.followup.send("❌ No legend holds found.")
+                suffix = f" for `{filter_label}`" if filter_label else ""
+                await interaction.followup.send(f"❌ No legend holds found{suffix}.")
                 return
 
-            embed = self.create_legends_embed(items, page=0)
+            embed = self.create_legends_embed(
+                items, page=0, show=show_mode, filter_label=filter_label
+            )
             total_pages = max(1, (len(items) + 4) // 5)
             if total_pages > 1:
                 view = ListPaginationView(
                     interaction.user.id,
                     total_pages,
-                    lambda page: self.create_legends_embed(items, page),
+                    lambda page: self.create_legends_embed(
+                        items, page, show_mode, filter_label
+                    ),
                 )
                 await interaction.followup.send(embed=embed, view=view)
             else:
@@ -2760,7 +3263,7 @@ class FastSnakeStats(commands.Cog):
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
-        run_mode=record_run_mode_autocomplete,
+        run_mode=list_run_mode_autocomplete,
     )
     async def unheld_command(
         self,

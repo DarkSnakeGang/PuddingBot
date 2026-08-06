@@ -146,20 +146,21 @@ def clear_context():
         - /record - Get world records for specific game settings (game mode, apple amount including Tally, speed, size, run mode, optional date)
         - /leaderboards - Full WR table for a chosen apple count, speed, and size across all modes (optional date)
         - /available-dates - List available historical dates for viewing past records
-        - /player - Player profile: current WRs, career, peaks, longevity, improving, holds (name, optional date)
+        - /player - Player profile (name, optional date), or explorer holds with holds=all|present|old|latest + optional tied + category filters (Timed = non-HS)
+        - /career - Career WR-days leaderboard (all / untied / tied holds)
         - /stats - Get top record holders statistics (by number and percentage, optional date)
         - /report - Weekly report of new and changed world records
         - /monthly - Monthly oldest-records update (optional YYYY-MM with complete FastSnakeStats months)
         - /random - Random valid challenge settings (optional tier + category filters; shows current WR)
         - /progression - WR change timeline for a category
-        - /longevity - Longest-held world records (still standing or all-time; optional category filters)
+        - /longevity - Longest-held WRs (standing/all-time; optional tied + category filters; Timed = non-HS)
         - /improving - Players gaining the most WRs over 7d/30d/90d/365d
-        - /contested - Categories with the most WR flips (optional category filters)
-        - /popularity - Categories with the most unique historical holders (optional category filters)
-        - /stale - Least-flipped / longest-unchanged held categories (optional category filters)
-        - /unicorns - Lottery-tier unicorn category holds
-        - /legends - Mythic-tier legend category holds
-        - /unheld - Never-held categories, easiest first (optional difficulty tier + category filters)
+        - /contested - Categories with the most WR flips (optional category filters; Timed = non-HS)
+        - /popularity - Most unique historical holders (optional Both/Untied/Tied + category filters; Timed = non-HS)
+        - /stale - Least-flipped / longest-unchanged held categories (optional category filters; Timed = non-HS)
+        - /unicorns - Lottery-tier unicorn holds (optional category filters)
+        - /legends - Mythic/Lottery holds (show=All|Legends|Unicorns; optional category filters)
+        - /unheld - Never-held categories, easiest first (optional difficulty tier + category filters; Timed = non-HS)
         - /activity - Yearly new-WR activity (day the #1 actually changed)
         - /caption - Add an ESMBot-style caption bar to an image (text; optional attachment/link)
         - Select Image - Right-click a message → Apps → Select Image, then /caption uses it
