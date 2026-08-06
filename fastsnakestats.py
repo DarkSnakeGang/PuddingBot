@@ -21,6 +21,11 @@ MONTHLY_BEATEN_LIMIT = int(os.getenv("MONTHLY_BEATEN_LIMIT", "10"))
 _MONTHLY_UTC_OFFSET = int(os.getenv("MONTHLY_REPORT_UTC_OFFSET", "3"))
 MONTHLY_REPORT_TZ = timezone(timedelta(hours=_MONTHLY_UTC_OFFSET))
 
+# FastSnakeStats Mastery mode-group filter labels
+MASTERY_MODE_HS_ONLY = "High score modes only"
+MASTERY_MODE_NO_PEACEFUL = "Excluding Peaceful"
+MASTERY_MODE_GROUPS = (MASTERY_MODE_HS_ONLY, MASTERY_MODE_NO_PEACEFUL)
+
 
 class FastSnakeStats(commands.Cog):
     """FastSnakeStats Discord bot integration"""
@@ -132,9 +137,20 @@ class FastSnakeStats(commands.Cog):
             improving = await github_cache_fetcher.get_player_improving(
                 player_id=player_id, player_name=display_name
             )
+            mastery = await github_cache_fetcher.get_mastery_player(
+                player_id=player_id, player_name=display_name
+            )
+            if mastery:
+                mastery_meta = await github_cache_fetcher.fetch_mastery_challenge()
+                mastery = {
+                    **mastery,
+                    "boardCount": ((mastery_meta or {}).get("meta") or {}).get(
+                        "boardCount", 1386
+                    ),
+                }
 
             if not player_records:
-                if not peak_stats and not career:
+                if not peak_stats and not career and not mastery:
                     return None
                 return {
                     'player_name': display_name,
@@ -148,6 +164,7 @@ class FastSnakeStats(commands.Cog):
                     'career': career,
                     'longevity_best': longevity_best,
                     'improving': improving,
+                    'mastery': mastery,
                 }
 
             # Sort by date (most recent first)
@@ -165,6 +182,7 @@ class FastSnakeStats(commands.Cog):
                 'career': career,
                 'longevity_best': longevity_best,
                 'improving': improving,
+                'mastery': mastery,
             }
             
         except Exception as e:
@@ -840,6 +858,13 @@ class FastSnakeStats(commands.Cog):
         """Run modes for explorer list filters, including Timed (all non-HS)."""
         options = ["Timed"] + dm.get_ordered_run_modes()
         return self._filter_setting_choices(options, current)
+
+    async def mastery_game_mode_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        """Modes for Mastery filters, including HS-only / excluding-Peaceful groups."""
+        options = list(MASTERY_MODE_GROUPS) + dm.get_ordered_gamemodes()
+        return self._filter_setting_choices(options, current)
     
     def get_random_combination(
         self,
@@ -1039,6 +1064,21 @@ class FastSnakeStats(commands.Cog):
             )
         return "\n".join(lines) if lines else "No recent WR gains in explorer windows."
 
+    def _format_player_mastery_stats(self, mastery: Optional[Dict]) -> str:
+        if not mastery:
+            return "No Mastery Challenge completions yet."
+        total = mastery.get("total")
+        board_count = mastery.get("boardCount") or 1386
+        bs = mastery.get("bySpeed") or {}
+        bz = mastery.get("bySize") or {}
+        lines = [
+            f"**Boards:** {total} / {board_count}",
+            f"N **{bs.get('Normal', 0)}** · F **{bs.get('Fast', 0)}** · S **{bs.get('Slow', 0)}**",
+            f"Std **{bz.get('Standard', 0)}** · Sm **{bz.get('Small', 0)}** · Lg **{bz.get('Large', 0)}**",
+            "_Use `/player holds:Mastery` or `/mastery` for details._",
+        ]
+        return "\n".join(lines)
+
     def create_player_embed(self, player_data: Dict, page: int = 0) -> discord.Embed:
         """Create a rich embed for player display with pagination"""
         activity = player_data.get('recent_activity') or []
@@ -1072,6 +1112,12 @@ class FastSnakeStats(commands.Cog):
                 player_data.get('peak_stats'),
                 player_data.get('career'),
             ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="🏅 Mastery",
+            value=self._format_player_mastery_stats(player_data.get('mastery')),
             inline=False
         )
 
@@ -1516,7 +1562,6 @@ class FastSnakeStats(commands.Cog):
         if not parts:
             return False
         checks = {
-            'game_mode': game_mode,
             'apple_amount': apple_amount,
             'speed': speed,
             'size': size,
@@ -1524,6 +1569,14 @@ class FastSnakeStats(commands.Cog):
         for key, value in checks.items():
             if value and parts[key] != value:
                 return False
+        if game_mode == MASTERY_MODE_HS_ONLY:
+            if parts['game_mode'] not in dm.HIGHSCORE_MODES:
+                return False
+        elif game_mode == MASTERY_MODE_NO_PEACEFUL:
+            if parts['game_mode'] == "Peaceful":
+                return False
+        elif game_mode and parts['game_mode'] != game_mode:
+            return False
         if run_mode == "Timed":
             if parts['run_mode'] == "High Score":
                 return False
@@ -1830,6 +1883,192 @@ class FastSnakeStats(commands.Cog):
             )
         return tagged
 
+    def _normalize_mastery_completion(self, item) -> Optional[Dict]:
+        if isinstance(item, str):
+            return {"category": item, "weblink": None, "time": None, "tier": None}
+        if not isinstance(item, dict):
+            return None
+        category = item.get("category") or item.get("c")
+        if not category:
+            return None
+        return {
+            "category": category,
+            "weblink": item.get("weblink"),
+            "runId": item.get("runId"),
+            "time": item.get("time"),
+            "tier": item.get("tier"),
+        }
+
+    def _summarize_mastery_rows(self, rows: List[Dict]) -> Dict:
+        by_speed = {"Normal": 0, "Fast": 0, "Slow": 0}
+        by_size = {"Standard": 0, "Small": 0, "Large": 0}
+        for row in rows:
+            parts = self._parse_category_parts(row.get("category", ""))
+            if not parts:
+                continue
+            if parts["speed"] in by_speed:
+                by_speed[parts["speed"]] += 1
+            if parts["size"] in by_size:
+                by_size[parts["size"]] += 1
+        return {"bySpeed": by_speed, "bySize": by_size, "total": len(rows)}
+
+    def _count_mastery_universe(
+        self,
+        data: Dict,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+    ) -> int:
+        meta = data.get("meta") or {}
+        apples = [apple_amount] if apple_amount else list(
+            meta.get("appleAmounts")
+            or ["1 Apple", "3 Apples", "5 Apples", "10 Apples", "Dice", "Bomb", "Tally"]
+        )
+        speeds = [speed] if speed else list(meta.get("speeds") or ["Normal", "Fast", "Slow"])
+        sizes = [size] if size else list(meta.get("sizes") or ["Standard", "Small", "Large"])
+        all_modes = list(
+            meta.get("modes")
+            or dm.get_ordered_gamemodes()
+        )
+        if game_mode == MASTERY_MODE_HS_ONLY:
+            modes = [m for m in all_modes if m in dm.HIGHSCORE_MODES]
+        elif game_mode == MASTERY_MODE_NO_PEACEFUL:
+            modes = [m for m in all_modes if m != "Peaceful"]
+        elif game_mode:
+            modes = [game_mode] if game_mode in all_modes else []
+        else:
+            modes = all_modes
+        return len(apples) * len(speeds) * len(sizes) * len(modes)
+
+    def _filter_mastery_completions(
+        self,
+        completed: List,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+    ) -> List[Dict]:
+        rows = []
+        for item in completed or []:
+            row = self._normalize_mastery_completion(item)
+            if not row:
+                continue
+            if not self._category_matches_filters(
+                row["category"],
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+            ):
+                continue
+            rows.append(row)
+        return rows
+
+    async def _get_mastery_leaderboard(
+        self,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        limit: int = 50,
+    ) -> Optional[Dict]:
+        data = await github_cache_fetcher.fetch_mastery_challenge()
+        if not data:
+            return None
+        filters = dict(
+            game_mode=game_mode,
+            apple_amount=apple_amount,
+            speed=speed,
+            size=size,
+        )
+        board_count = self._count_mastery_universe(data, **filters)
+        by_player = data.get("byPlayer") or {}
+        rows = []
+        community_seen: Dict[str, bool] = {}
+        for player_id, entry in by_player.items():
+            matched = self._filter_mastery_completions(entry.get("completed") or [], **filters)
+            if not matched:
+                continue
+            metrics = self._summarize_mastery_rows(matched)
+            rows.append({
+                "playerId": player_id,
+                "playerName": entry.get("playerName"),
+                "total": metrics["total"],
+                "bySpeed": metrics["bySpeed"],
+                "bySize": metrics["bySize"],
+            })
+            for row in matched:
+                community_seen[row["category"]] = True
+        rows.sort(
+            key=lambda r: (-(r.get("total") or 0), str(r.get("playerName") or ""))
+        )
+        community_rows = [{"category": c} for c in community_seen]
+        community_metrics = self._summarize_mastery_rows(community_rows)
+        inhuman_list = (data.get("meta") or {}).get("inhumanBoards") or []
+        inhuman_universe = [
+            c for c in inhuman_list
+            if self._category_matches_filters(c, **filters)
+        ]
+        inhuman_have = sum(1 for c in inhuman_universe if community_seen.get(c))
+        return {
+            "meta": data.get("meta") or {},
+            "board_count": board_count,
+            "community": {
+                "playerName": "Community Mastery",
+                "community": True,
+                "total": community_metrics["total"],
+                "bySpeed": community_metrics["bySpeed"],
+                "bySize": community_metrics["bySize"],
+            },
+            "inhuman_have": inhuman_have,
+            "inhuman_max": len(inhuman_universe),
+            "rows": rows[:limit],
+            "player_count": len(rows),
+            "filter_label": self._format_category_filters(**filters),
+        }
+
+    async def _get_player_mastery_items(
+        self,
+        player_id: Optional[str] = None,
+        player_name: Optional[str] = None,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+    ) -> Optional[Dict]:
+        data = await github_cache_fetcher.fetch_mastery_challenge()
+        if not data:
+            return None
+        entry = await github_cache_fetcher.get_mastery_player(
+            player_id=player_id, player_name=player_name
+        )
+        filters = dict(
+            game_mode=game_mode,
+            apple_amount=apple_amount,
+            speed=speed,
+            size=size,
+        )
+        board_count = self._count_mastery_universe(data, **filters)
+        completed = (entry.get("completed") or []) if entry else []
+        all_rows = [
+            r for r in (self._normalize_mastery_completion(i) for i in completed) if r
+        ]
+        rows = self._filter_mastery_completions(completed, **filters)
+        rows.sort(key=lambda r: str(r.get("category") or ""))
+        metrics = self._summarize_mastery_rows(rows)
+        return {
+            "player_name": (entry or {}).get("playerName") or player_name or "Unknown",
+            "player_id": (entry or {}).get("playerId") or player_id,
+            "board_count": board_count,
+            "unfiltered_total": len(all_rows),
+            "rows": rows,
+            "metrics": metrics,
+            "entry": entry,
+            "filter_label": self._format_category_filters(**filters),
+            "found": entry is not None,
+        }
+
     def create_contested_embed(
         self, items: List[Dict], page: int = 0, filter_label: str = ""
     ) -> discord.Embed:
@@ -2076,6 +2315,117 @@ class FastSnakeStats(commands.Cog):
         embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
         return embed
 
+    def _format_mastery_breakdown(self, metrics: Dict, board_count: int) -> str:
+        bs = metrics.get("bySpeed") or {}
+        bz = metrics.get("bySize") or {}
+        total = metrics.get("total", 0)
+        return (
+            f"**{total} / {board_count}** boards\n"
+            f"N **{bs.get('Normal', 0)}** · F **{bs.get('Fast', 0)}** · S **{bs.get('Slow', 0)}**\n"
+            f"Std **{bz.get('Standard', 0)}** · Sm **{bz.get('Small', 0)}** · Lg **{bz.get('Large', 0)}**"
+        )
+
+    def create_mastery_leaderboard_embed(self, data: Dict, page: int = 0) -> discord.Embed:
+        rows = data.get("rows") or []
+        community = data.get("community") or {}
+        board_count = data.get("board_count") or 0
+        filter_label = data.get("filter_label") or ""
+        items_per_page = 10
+        total_pages = max(1, (len(rows) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_items = rows[start:start + items_per_page]
+        title = "🏅 Mastery Challenge — All Apples"
+        if filter_label:
+            title += f" — {filter_label}"
+
+        embed = discord.Embed(
+            title=title,
+            description=(
+                f"Verified All Apples completions · **{data.get('player_count', len(rows))}** players · "
+                f"max **{board_count}** for filters · "
+                f"Inhuman **{data.get('inhuman_have', 0)} / {data.get('inhuman_max', 0)}**"
+            ),
+            color=0xf39c12,
+            timestamp=datetime.now(),
+        )
+        if page == 0 and community:
+            embed.add_field(
+                name="0. Community Mastery",
+                value=self._format_mastery_breakdown(
+                    {
+                        "total": community.get("total", 0),
+                        "bySpeed": community.get("bySpeed") or {},
+                        "bySize": community.get("bySize") or {},
+                    },
+                    board_count,
+                ),
+                inline=False,
+            )
+        lines = []
+        for i, item in enumerate(page_items, start + 1):
+            lines.append(
+                f"{i}. **{item.get('playerName', 'Unknown')}** — "
+                f"**{item.get('total', 0)} / {board_count}** · "
+                f"N{item.get('bySpeed', {}).get('Normal', 0)} "
+                f"F{item.get('bySpeed', {}).get('Fast', 0)} "
+                f"S{item.get('bySpeed', {}).get('Slow', 0)} · "
+                f"Std{item.get('bySize', {}).get('Standard', 0)} "
+                f"Sm{item.get('bySize', {}).get('Small', 0)} "
+                f"Lg{item.get('bySize', {}).get('Large', 0)}"
+            )
+        embed.add_field(
+            name="Leaderboard",
+            value="\n".join(lines) if lines else "No mastery completions match these filters.",
+            inline=False,
+        )
+        embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
+        return embed
+
+    def create_player_mastery_embed(self, data: Dict, page: int = 0) -> discord.Embed:
+        rows = data.get("rows") or []
+        metrics = data.get("metrics") or {}
+        board_count = data.get("board_count") or 0
+        filter_label = data.get("filter_label") or ""
+        items_per_page = 8
+        total_pages = max(1, (len(rows) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_items = rows[start:start + items_per_page]
+        title = f"🏅 {data.get('player_name', 'Player')} — Mastery"
+        if filter_label:
+            title += f" — {filter_label}"
+
+        embed = discord.Embed(
+            title=title,
+            description=self._format_mastery_breakdown(metrics, board_count),
+            color=0xf39c12,
+            timestamp=datetime.now(),
+        )
+        unfiltered = data.get("unfiltered_total")
+        if unfiltered is not None and unfiltered != len(rows):
+            embed.description = (
+                (embed.description or "")
+                + f"\n*{len(rows)} shown · {unfiltered} unfiltered · All Apples*"
+            )
+        else:
+            embed.description = (embed.description or "") + "\n*All Apples completions*"
+
+        lines = []
+        for i, item in enumerate(page_items, start + 1):
+            time_str = self._format_linked_hold_time(item)
+            tier = item.get("tier")
+            tier_bit = f" · {tier}" if tier else ""
+            lines.append(
+                f"{i}. {self._format_category_line(item.get('category', ''))} — "
+                f"{time_str}{tier_bit}"
+            )
+        embed.add_field(
+            name="Completed boards",
+            value="\n".join(lines) if lines else "No mastery boards match these filters.",
+            inline=False,
+        )
+        embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
+        return embed
+
     def create_unheld_embed(self, unheld_data: Dict, page: int = 0) -> discord.Embed:
         items = unheld_data.get('rows') or []
         items_per_page = 8
@@ -2316,13 +2666,13 @@ class FastSnakeStats(commands.Cog):
     @app_commands.describe(
         player_name="Player name to look up",
         date="Historical date - optional (profile snapshot)",
-        holds="Explorer hold list mode (omitted = profile)",
+        holds="Explorer hold list mode (omitted = profile); Mastery = All Apples challenge",
         tied="Tied filter for present holds only",
-        game_mode="Optional game mode filter (holds list)",
-        apple_amount="Optional apple count filter (holds list)",
-        speed="Optional speed filter (holds list)",
-        size="Optional size filter (holds list)",
-        run_mode="Optional run mode filter; Timed = non-HS (holds list)",
+        game_mode="Optional game mode filter (holds/Mastery; includes HS-only / Excluding Peaceful)",
+        apple_amount="Optional apple count filter (holds/Mastery list)",
+        speed="Optional speed filter (holds/Mastery list)",
+        size="Optional size filter (holds/Mastery list)",
+        run_mode="Optional run mode filter; Timed = non-HS (WR holds list)",
     )
     @app_commands.choices(
         holds=[
@@ -2330,6 +2680,7 @@ class FastSnakeStats(commands.Cog):
             app_commands.Choice(name="Present", value="present"),
             app_commands.Choice(name="Old", value="old"),
             app_commands.Choice(name="Latest activity", value="latest"),
+            app_commands.Choice(name="Mastery", value="mastery"),
         ],
         tied=[
             app_commands.Choice(name="All holds", value="all"),
@@ -2339,7 +2690,7 @@ class FastSnakeStats(commands.Cog):
     )
     @app_commands.autocomplete(
         date=player_date_autocomplete,
-        game_mode=record_game_mode_autocomplete,
+        game_mode=mastery_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
@@ -2363,6 +2714,48 @@ class FastSnakeStats(commands.Cog):
         
         try:
             hold_mode = holds.value if holds else None
+            if hold_mode == "mastery":
+                peak_stats = await github_cache_fetcher.get_player_peak_stats(player_name)
+                display_name = (peak_stats or {}).get("name") or player_name
+                player_id = (peak_stats or {}).get("id")
+                filters = dict(
+                    game_mode=game_mode,
+                    apple_amount=apple_amount,
+                    speed=speed,
+                    size=size,
+                )
+                data = await self._get_player_mastery_items(
+                    player_id=player_id,
+                    player_name=display_name,
+                    **filters,
+                )
+                if data is None:
+                    await interaction.followup.send("❌ Mastery data unavailable.")
+                    return
+                if not data.get("found") and not data.get("rows"):
+                    await interaction.followup.send(
+                        f"❌ No Mastery completions found for **{display_name}**."
+                    )
+                    return
+                if not data.get("rows"):
+                    suffix = f" for `{data.get('filter_label')}`" if data.get("filter_label") else ""
+                    await interaction.followup.send(
+                        f"❌ No Mastery boards match{suffix} for **{display_name}**."
+                    )
+                    return
+                embed = self.create_player_mastery_embed(data, page=0)
+                total_pages = max(1, (len(data["rows"]) + 7) // 8)
+                if total_pages > 1:
+                    view = ListPaginationView(
+                        interaction.user.id,
+                        total_pages,
+                        lambda page: self.create_player_mastery_embed(data, page),
+                    )
+                    await interaction.followup.send(embed=embed, view=view)
+                else:
+                    await interaction.followup.send(embed=embed)
+                return
+
             if hold_mode:
                 peak_stats = await github_cache_fetcher.get_player_peak_stats(player_name)
                 display_name = (peak_stats or {}).get("name") or player_name
@@ -3097,6 +3490,102 @@ class FastSnakeStats(commands.Cog):
         except Exception as e:
             print(f"Error in career command: {e}")
             await interaction.followup.send("❌ An error occurred while fetching career data.")
+
+    @app_commands.command(
+        name="mastery",
+        description="Mastery Challenge: All Apples completions leaderboard or player boards",
+    )
+    @app_commands.describe(
+        player_name="Optional player — show their completed Mastery boards",
+        game_mode="Mode or group (High score modes only / Excluding Peaceful)",
+        apple_amount="Optional apple count filter",
+        speed="Optional speed filter",
+        size="Optional size filter",
+    )
+    @app_commands.autocomplete(
+        game_mode=mastery_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+    )
+    async def mastery_command(
+        self,
+        interaction: discord.Interaction,
+        player_name: Optional[str] = None,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+    ):
+        await interaction.response.defer()
+        try:
+            filters = dict(
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+            )
+            if player_name:
+                peak_stats = await github_cache_fetcher.get_player_peak_stats(player_name)
+                display_name = (peak_stats or {}).get("name") or player_name
+                player_id = (peak_stats or {}).get("id")
+                data = await self._get_player_mastery_items(
+                    player_id=player_id,
+                    player_name=display_name,
+                    **filters,
+                )
+                if data is None:
+                    await interaction.followup.send("❌ Mastery data unavailable.")
+                    return
+                if not data.get("found") and not data.get("rows"):
+                    await interaction.followup.send(
+                        f"❌ No Mastery completions found for **{display_name}**."
+                    )
+                    return
+                if not data.get("rows"):
+                    suffix = f" for `{data.get('filter_label')}`" if data.get("filter_label") else ""
+                    await interaction.followup.send(
+                        f"❌ No Mastery boards match{suffix} for **{display_name}**."
+                    )
+                    return
+                embed = self.create_player_mastery_embed(data, page=0)
+                total_pages = max(1, (len(data["rows"]) + 7) // 8)
+                if total_pages > 1:
+                    view = ListPaginationView(
+                        interaction.user.id,
+                        total_pages,
+                        lambda page: self.create_player_mastery_embed(data, page),
+                    )
+                    await interaction.followup.send(embed=embed, view=view)
+                else:
+                    await interaction.followup.send(embed=embed)
+                return
+
+            data = await self._get_mastery_leaderboard(**filters)
+            if data is None:
+                await interaction.followup.send("❌ Mastery data unavailable.")
+                return
+            if not data.get("rows") and not (data.get("community") or {}).get("total"):
+                suffix = f" for `{data.get('filter_label')}`" if data.get("filter_label") else ""
+                await interaction.followup.send(
+                    f"❌ No Mastery completions found{suffix}."
+                )
+                return
+
+            embed = self.create_mastery_leaderboard_embed(data, page=0)
+            total_pages = max(1, (len(data.get("rows") or []) + 9) // 10)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_mastery_leaderboard_embed(data, page),
+                )
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in mastery command: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching Mastery data.")
 
     @app_commands.command(
         name="unicorns",

@@ -13,6 +13,7 @@ class GitHubCacheFetcher:
         self.metadata_url = f"{self.base_url}/time-travel-cache/metadata/available-dates.json"
         self.player_stats_url = f"{self.base_url}/time-travel-cache/metadata/player-stats.json"
         self.statistics_explorer_url = f"{self.base_url}/time-travel-cache/metadata/statistics-explorer.json"
+        self.mastery_challenge_url = f"{self.base_url}/time-travel-cache/metadata/mastery-challenge.json"
         # Sibling FastSnakeStats checkout (analyzer v11+ has career) used when GitHub lags
         self._local_statistics_explorer_path = os.path.normpath(os.path.join(
             os.path.dirname(__file__),
@@ -22,11 +23,21 @@ class GitHubCacheFetcher:
             'metadata',
             'statistics-explorer.json',
         ))
+        self._local_mastery_challenge_path = os.path.normpath(os.path.join(
+            os.path.dirname(__file__),
+            '..',
+            'FastSnakeStats',
+            'time-travel-cache',
+            'metadata',
+            'mastery-challenge.json',
+        ))
         self.fallback_to_api = True
         self._player_stats_cache: Optional[Dict] = None
         self._player_stats_cache_fetched_at: Optional[datetime] = None
         self._statistics_explorer_cache: Optional[Dict] = None
         self._statistics_explorer_cache_fetched_at: Optional[datetime] = None
+        self._mastery_challenge_cache: Optional[Dict] = None
+        self._mastery_challenge_cache_fetched_at: Optional[datetime] = None
     
     async def get_most_recent_date(self) -> Optional[str]:
         """Get the most recent available date from GitHub"""
@@ -541,6 +552,93 @@ class GitHubCacheFetcher:
         if not data:
             return None
         return data.get('activityHeatmap') or []
+
+    def _load_local_mastery_challenge(self) -> Optional[Dict]:
+        path = self._local_mastery_challenge_path
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path, 'r', encoding='utf-8') as handle:
+                return json.load(handle)
+        except Exception as error:
+            print(f'Error reading local mastery challenge: {error}')
+            return None
+
+    def _prefer_mastery_challenge(self, remote: Optional[Dict]) -> Optional[Dict]:
+        """Prefer local mastery JSON when it is newer than GitHub."""
+        local = self._load_local_mastery_challenge()
+        if not local:
+            return remote
+        if not remote:
+            return local
+        local_updated = ((local.get('meta') or {}).get('lastUpdated') or '')
+        remote_updated = ((remote.get('meta') or {}).get('lastUpdated') or '')
+        if local_updated and local_updated > remote_updated:
+            return local
+        local_seen = ((local.get('meta') or {}).get('seenRuns') or 0)
+        remote_seen = ((remote.get('meta') or {}).get('seenRuns') or 0)
+        if local_seen > remote_seen:
+            return local
+        return remote
+
+    async def fetch_mastery_challenge(self, force_refresh: bool = False) -> Optional[Dict]:
+        """Fetch mastery-challenge metadata (cached in memory for 1 hour)."""
+        try:
+            if (
+                not force_refresh
+                and self._mastery_challenge_cache is not None
+                and self._mastery_challenge_cache_fetched_at is not None
+                and (datetime.utcnow() - self._mastery_challenge_cache_fetched_at).total_seconds() < 3600
+            ):
+                return self._mastery_challenge_cache
+
+            response = requests.get(self.mastery_challenge_url, timeout=30)
+            remote = response.json() if response.ok else None
+            if not response.ok:
+                print(f'GitHub mastery challenge not available ({response.status_code})')
+
+            data = self._prefer_mastery_challenge(remote)
+            if data:
+                self._mastery_challenge_cache = data
+                self._mastery_challenge_cache_fetched_at = datetime.utcnow()
+                return data
+
+            local = self._prefer_mastery_challenge(None)
+            if local:
+                self._mastery_challenge_cache = local
+                self._mastery_challenge_cache_fetched_at = datetime.utcnow()
+                return local
+            return self._mastery_challenge_cache
+        except Exception as error:
+            print(f'Error fetching mastery challenge: {error}')
+            local = self._prefer_mastery_challenge(None)
+            if local:
+                self._mastery_challenge_cache = local
+                self._mastery_challenge_cache_fetched_at = datetime.utcnow()
+                return local
+            return self._mastery_challenge_cache
+
+    async def get_mastery_player(
+        self, player_id: Optional[str] = None, player_name: Optional[str] = None
+    ) -> Optional[Dict]:
+        """Look up a player's mastery entry by id or name."""
+        data = await self.fetch_mastery_challenge()
+        if not data:
+            return None
+        by_player = data.get('byPlayer') or {}
+        if player_id and player_id in by_player:
+            entry = dict(by_player[player_id])
+            entry['playerId'] = player_id
+            return entry
+        name_lower = (player_name or '').lower().strip()
+        if not name_lower:
+            return None
+        for pid, entry in by_player.items():
+            if (entry.get('playerName') or '').lower() == name_lower:
+                out = dict(entry)
+                out['playerId'] = pid
+                return out
+        return None
 
 # Create global instance
 github_cache_fetcher = GitHubCacheFetcher()

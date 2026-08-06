@@ -146,8 +146,9 @@ def clear_context():
         - /record - Get world records for specific game settings (game mode, apple amount including Tally, speed, size, run mode, optional date)
         - /leaderboards - Full WR table for a chosen apple count, speed, and size across all modes (optional date)
         - /available-dates - List available historical dates for viewing past records
-        - /player - Player profile (name, optional date), or explorer holds with holds=all|present|old|latest + optional tied + category filters (Timed = non-HS)
+        - /player - Player profile (name, optional date), or explorer holds with holds=all|present|old|latest|mastery + optional tied + category filters (Timed = non-HS; Mastery also supports High score modes only / Excluding Peaceful)
         - /career - Career WR-days leaderboard (all / untied / tied holds)
+        - /mastery - Mastery Challenge All Apples leaderboard (optional player + category filters; High score modes only / Excluding Peaceful)
         - /stats - Get top record holders statistics (by number and percentage, optional date)
         - /report - Weekly report of new and changed world records
         - /monthly - Monthly oldest-records update (optional YYYY-MM with complete FastSnakeStats months)
