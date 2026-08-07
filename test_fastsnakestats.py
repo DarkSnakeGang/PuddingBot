@@ -42,14 +42,21 @@ async def test_github_cache():
     stats = await github_cache_fetcher.get_cache_stats()
     if stats:
         print(f"✅ Cache stats retrieved")
+        print(f"   Source: {stats.get('source', 'N/A')}")
         print(f"   Total dates: {stats.get('totalDates', 'N/A')}")
         if stats.get('dateRange'):
-            print(f"   Date range: {stats['dateRange'].get('start', 'N/A')} to {stats['dateRange'].get('end', 'N/A')}")
+            start = stats['dateRange'].get('start') or stats['dateRange'].get('earliest')
+            end = stats['dateRange'].get('end') or stats['dateRange'].get('latest')
+            print(f"   Date range: {start} to {end}")
+        if stats.get('source') != 'runs-derived':
+            print("❌ Expected source=runs-derived")
+            return False
     else:
         print("❌ Could not retrieve cache stats")
+        return False
     
-    # Test 4: Test record lookup
-    print("\n4. Testing record lookup...")
+    # Test 4: Test record lookup via runs-derived timelines
+    print("\n4. Testing record lookup (runs-derived)...")
     most_recent_date = await github_cache_fetcher.get_most_recent_date()
     if most_recent_date:
         print(f"   Using date: {most_recent_date}")
@@ -74,13 +81,16 @@ async def test_github_cache():
                 print(f"   Total runs: {len(runs)}")
             else:
                 print("❌ No runs found for this configuration")
+                return False
         else:
             print("❌ No record data found for this configuration")
+            return False
     else:
         print("❌ Could not get most recent date")
+        return False
     
     print("\n" + "=" * 50)
-    print("✅ FastSnakeStats integration test completed!")
+    print("✅ FastSnakeStats runs-derived integration test completed!")
     return True
 
 async def test_data_management():

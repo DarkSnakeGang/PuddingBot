@@ -5,86 +5,216 @@ from typing import Optional, Dict, List, Any
 from datetime import datetime
 
 class GitHubCacheFetcher:
-    """Fetches world records data from GitHub-hosted cache files"""
+    """Fetches world records from FastSnakeStats runs-derived WR timelines."""
     
     def __init__(self):
         self.base_url = 'https://raw.githubusercontent.com/DarkSnakeGang/FastSnakeStats/refs/heads/main'
-        self.cache_dir = 'daily'
-        self.metadata_url = f"{self.base_url}/time-travel-cache/metadata/available-dates.json"
+        self.runs_dates_url = f"{self.base_url}/time-travel-cache/metadata/available-dates-runs.json"
+        self.timelines_url = f"{self.base_url}/time-travel-cache/runs-derived/wr-timelines.json"
         self.player_stats_url = f"{self.base_url}/time-travel-cache/metadata/player-stats.json"
         self.statistics_explorer_url = f"{self.base_url}/time-travel-cache/metadata/statistics-explorer.json"
         self.mastery_challenge_url = f"{self.base_url}/time-travel-cache/metadata/mastery-challenge.json"
-        # Sibling FastSnakeStats checkout (analyzer v11+ has career) used when GitHub lags
-        self._local_statistics_explorer_path = os.path.normpath(os.path.join(
+        # Sibling FastSnakeStats checkout used when GitHub lags
+        self._local_fss_root = os.path.normpath(os.path.join(
             os.path.dirname(__file__),
             '..',
             'FastSnakeStats',
             'time-travel-cache',
-            'metadata',
-            'statistics-explorer.json',
         ))
-        self._local_mastery_challenge_path = os.path.normpath(os.path.join(
-            os.path.dirname(__file__),
-            '..',
-            'FastSnakeStats',
-            'time-travel-cache',
-            'metadata',
-            'mastery-challenge.json',
-        ))
+        self._local_runs_dates_path = os.path.join(
+            self._local_fss_root, 'metadata', 'available-dates-runs.json'
+        )
+        self._local_timelines_path = os.path.join(
+            self._local_fss_root, 'runs-derived', 'wr-timelines.json'
+        )
+        self._local_statistics_explorer_path = os.path.join(
+            self._local_fss_root, 'metadata', 'statistics-explorer.json'
+        )
+        self._local_mastery_challenge_path = os.path.join(
+            self._local_fss_root, 'metadata', 'mastery-challenge.json'
+        )
         self.fallback_to_api = True
+        self._runs_dates: Optional[Dict] = None
+        self._timelines: Optional[Dict] = None
         self._player_stats_cache: Optional[Dict] = None
         self._player_stats_cache_fetched_at: Optional[datetime] = None
         self._statistics_explorer_cache: Optional[Dict] = None
         self._statistics_explorer_cache_fetched_at: Optional[datetime] = None
         self._mastery_challenge_cache: Optional[Dict] = None
         self._mastery_challenge_cache_fetched_at: Optional[datetime] = None
+
+    def _load_local_json(self, path: str) -> Optional[Dict]:
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path, 'r', encoding='utf-8') as handle:
+                return json.load(handle)
+        except Exception as error:
+            print(f'Error reading local JSON {path}: {error}')
+            return None
+
+    def _load_runs_dates(self) -> Optional[Dict]:
+        """Load available-dates-runs.json (local sibling first, then GitHub)."""
+        if self._runs_dates is not None:
+            return self._runs_dates
+
+        local = self._load_local_json(self._local_runs_dates_path)
+        if local and local.get('availableDates'):
+            self._runs_dates = local
+            return self._runs_dates
+
+        try:
+            response = requests.get(self.runs_dates_url, timeout=15)
+            if response.ok:
+                metadata = response.json()
+                if metadata.get('availableDates'):
+                    self._runs_dates = metadata
+                    return self._runs_dates
+            print('Runs-derived dates metadata not available')
+        except Exception as error:
+            print(f'Error fetching runs-derived dates: {error}')
+        return None
+
+    def _load_timelines(self) -> Optional[Dict]:
+        """Load wr-timelines.json once (local sibling first, then GitHub)."""
+        if self._timelines is not None:
+            return self._timelines
+
+        local = self._load_local_json(self._local_timelines_path)
+        if local and local.get('boards'):
+            self._timelines = local
+            print('Loaded local runs-derived WR timelines')
+            return self._timelines
+
+        try:
+            print('Fetching runs-derived WR timelines from GitHub...')
+            response = requests.get(self.timelines_url, timeout=120)
+            if not response.ok:
+                print(f'WR timelines not available ({response.status_code})')
+                return None
+            self._timelines = response.json()
+            print('Successfully loaded runs-derived WR timelines')
+            return self._timelines
+        except Exception as error:
+            print(f'Error fetching WR timelines: {error}')
+            return None
+
+    @staticmethod
+    def _wr_as_of(timeline: List[Dict], date: str) -> List[Dict]:
+        """Binary-search last timeline event with d <= date; return its runs."""
+        if not timeline:
+            return []
+        lo = 0
+        hi = len(timeline) - 1
+        best = -1
+        while lo <= hi:
+            mid = (lo + hi) >> 1
+            if timeline[mid].get('d', '') <= date:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        if best < 0:
+            return []
+        return timeline[best].get('runs') or []
+
+    def _build_derived_day(self, timelines: Dict, date: str) -> Dict:
+        """Expand compact timeline runs into daily-cache-compatible records."""
+        boards = (timelines or {}).get('boards') or {}
+        records: Dict[str, Any] = {}
+        for category, timeline in boards.items():
+            top = self._wr_as_of(timeline or [], date)
+            parts = category.split('|')
+            count_part = parts[4] if len(parts) > 4 else ''
+            settings_count = (
+                'H' if count_part == 'High Score'
+                else str(count_part or '').replace(' Apples', '')
+            )
+            records[category] = {
+                'success': len(top) > 0,
+                'settings': [
+                    parts[0] if len(parts) > 0 else '',
+                    parts[1] if len(parts) > 1 else '',
+                    parts[2] if len(parts) > 2 else '',
+                    0,
+                    settings_count,
+                ],
+                'runs': [
+                    self._expand_compact_run(run, date) for run in top
+                ],
+            }
+        return {
+            'date': date,
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'source': 'runs-derived',
+            'records': records,
+        }
+
+    @staticmethod
+    def _expand_compact_run(run: Dict, date: str) -> Dict:
+        """Expand a compact timeline run into SRC-like run shape."""
+        is_guest = bool(run.get('g')) or str(run.get('p', '')).startswith('guest:')
+        name_style = run.get('ns') or {
+            'style': 'solid',
+            'color': {'dark': '#9e9e9e', 'light': '#9e9e9e'},
+        }
+        if is_guest:
+            player = {
+                'rel': 'guest',
+                'name': run.get('n'),
+                'name-style': name_style,
+            }
+        else:
+            player = {
+                'rel': 'user',
+                'id': run.get('p'),
+                'names': {'international': run.get('n')},
+                'weblink': f"https://www.speedrun.com/user/{run.get('p')}",
+                'name-style': run.get('ns') or None,
+            }
+        return {
+            'id': run.get('id'),
+            'date': date,
+            'weblink': run.get('w'),
+            'times': {
+                'primary': run.get('t'),
+                'primary_t': run.get('pt'),
+            },
+            'players': {'data': [player]},
+            'values': {},
+        }
     
     async def get_most_recent_date(self) -> Optional[str]:
-        """Get the most recent available date from GitHub"""
+        """Get the most recent available date from runs-derived metadata"""
         try:
-            response = requests.get(self.metadata_url, timeout=10)
-            if not response.ok:
-                print('GitHub metadata not available (404), GitHub cache not set up yet')
-                return None
-            
-            metadata = response.json()
-            if metadata.get('availableDates') and len(metadata['availableDates']) > 0:
+            metadata = self._load_runs_dates()
+            if metadata and metadata.get('availableDates'):
                 return metadata['availableDates'][-1]
+            print('Runs-derived dates metadata not available')
         except Exception as error:
-            print(f'Error fetching GitHub metadata: {error}')
+            print(f'Error fetching most recent date: {error}')
         return None
     
     async def is_date_available(self, date: str) -> bool:
-        """Check if a specific date is available in GitHub cache"""
+        """Check if a specific date is available in runs-derived cache"""
         try:
-            response = requests.get(self.metadata_url, timeout=10)
-            if not response.ok:
-                print('GitHub metadata not available (404), cannot check date availability')
-                return False
-            
-            metadata = response.json()
-            return metadata.get('availableDates') and date in metadata['availableDates']
+            dates = await self.get_available_dates()
+            return date in dates
         except Exception as error:
             print(f'Error checking date availability: {error}')
             return False
     
     async def fetch_cache_for_date(self, date: str) -> Optional[Dict]:
-        """Fetch cache data for a specific date from GitHub"""
+        """Build a day snapshot from runs-derived WR timelines"""
         try:
-            year, month = date.split('-')[:2]
-            cache_url = f"{self.base_url}/time-travel-cache/{self.cache_dir}/{year}/{month}/{date}.json"
-            print(f"Fetching GitHub cache for {date}...")
-            
-            response = requests.get(cache_url, timeout=15)
-            if not response.ok:
-                print(f"GitHub cache not available for {date}")
+            timelines = self._load_timelines()
+            if not timelines:
+                print(f"WR timelines unavailable; cannot build snapshot for {date}")
                 return None
-            
-            cache_data = response.json()
-            print(f"Successfully fetched GitHub cache for {date}")
-            return cache_data
+            print(f"Built runs-derived snapshot for {date}")
+            return self._build_derived_day(timelines, date)
         except Exception as error:
-            print(f"Error fetching GitHub cache for {date}: {error}")
+            print(f"Error building runs-derived cache for {date}: {error}")
             return None
     
     def convert_cache_format(self, github_cache: Dict, target_date: str) -> Optional[Dict]:
@@ -150,22 +280,20 @@ class GitHubCacheFetcher:
         return self.convert_cache_format(cache_data, date)
     
     async def get_available_dates(self) -> List[str]:
-        """Get available dates from GitHub"""
+        """Get available dates from runs-derived metadata"""
         try:
-            response = requests.get(self.metadata_url, timeout=10)
-            if not response.ok:
+            metadata = self._load_runs_dates()
+            if not metadata:
                 return []
-            
-            metadata = response.json()
             return metadata.get('availableDates', [])
         except Exception as error:
             print(f'Error fetching available dates: {error}')
             return []
 
     async def get_complete_year_months(self) -> List[str]:
-        """Return YYYY-MM months with a full calendar of daily cache files.
+        """Return YYYY-MM months with a full calendar of runs-derived dates.
 
-        Computed on the fly from available-dates.json — no hardcoded month list.
+        Computed on the fly from available-dates-runs.json — no hardcoded month list.
         A month is complete only when every day 1..N is present (so the current
         partial month and any gap months are excluded automatically).
         """
@@ -206,26 +334,35 @@ class GitHubCacheFetcher:
         return year_month in complete
     
     async def is_github_cache_available(self) -> bool:
-        """Check if GitHub cache is accessible"""
+        """Check if runs-derived cache is accessible"""
         try:
-            response = requests.get(self.metadata_url, timeout=10)
-            return response.ok
+            metadata = self._load_runs_dates()
+            return bool(metadata and metadata.get('availableDates'))
         except Exception as error:
             print(f'Error checking GitHub cache availability: {error}')
             return False
     
     async def get_cache_stats(self) -> Optional[Dict]:
-        """Get cache statistics from GitHub"""
+        """Get cache statistics from runs-derived metadata"""
         try:
-            response = requests.get(self.metadata_url, timeout=10)
-            if not response.ok:
+            metadata = self._load_runs_dates()
+            if not metadata:
                 return None
-            
-            metadata = response.json()
+
+            date_range = metadata.get('dateRange') or {}
+            # Normalize earliest/latest (runs-derived) alongside legacy start/end
+            normalized_range = {
+                'start': date_range.get('start') or date_range.get('earliest'),
+                'end': date_range.get('end') or date_range.get('latest'),
+                'earliest': date_range.get('earliest') or date_range.get('start'),
+                'latest': date_range.get('latest') or date_range.get('end'),
+            } if date_range else None
+
             return {
                 'totalDates': metadata.get('totalDates', 0),
-                'dateRange': metadata.get('dateRange'),
-                'lastUpdated': metadata.get('lastUpdated')
+                'dateRange': normalized_range,
+                'lastUpdated': metadata.get('lastUpdated'),
+                'source': metadata.get('source', 'runs-derived'),
             }
         except Exception as error:
             print(f'Error fetching cache stats: {error}')
@@ -401,15 +538,7 @@ class GitHubCacheFetcher:
 
     def _load_local_statistics_explorer(self) -> Optional[Dict]:
         """Load sibling FastSnakeStats explorer JSON when present."""
-        path = self._local_statistics_explorer_path
-        if not os.path.isfile(path):
-            return None
-        try:
-            with open(path, 'r', encoding='utf-8') as handle:
-                return json.load(handle)
-        except Exception as error:
-            print(f'Error reading local statistics explorer: {error}')
-            return None
+        return self._load_local_json(self._local_statistics_explorer_path)
 
     def _prefer_explorer_with_career(self, remote: Optional[Dict]) -> Optional[Dict]:
         """Prefer local explorer when it has career data GitHub does not yet."""
@@ -554,15 +683,7 @@ class GitHubCacheFetcher:
         return data.get('activityHeatmap') or []
 
     def _load_local_mastery_challenge(self) -> Optional[Dict]:
-        path = self._local_mastery_challenge_path
-        if not os.path.isfile(path):
-            return None
-        try:
-            with open(path, 'r', encoding='utf-8') as handle:
-                return json.load(handle)
-        except Exception as error:
-            print(f'Error reading local mastery challenge: {error}')
-            return None
+        return self._load_local_json(self._local_mastery_challenge_path)
 
     def _prefer_mastery_challenge(self, remote: Optional[Dict]) -> Optional[Dict]:
         """Prefer local mastery JSON when it is newer than GitHub."""

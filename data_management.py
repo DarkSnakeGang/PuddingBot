@@ -283,17 +283,20 @@ def parse_time(time_str: str) -> str:
 def get_player_name(run_data: dict) -> str:
     """Extract player name from run data"""
     try:
-        if (run_data.get('players') and 
-            run_data['players'].get('data') and 
-            isinstance(run_data['players']['data'], list) and 
+        if (run_data.get('players') and
+            run_data['players'].get('data') and
+            isinstance(run_data['players']['data'], list) and
             len(run_data['players']['data']) > 0):
-            
+
             player_data = run_data['players']['data'][0]
             if player_data.get('names') and player_data['names'].get('international'):
                 return player_data['names']['international']
+            # Guest players from runs-derived timelines use top-level name
+            if player_data.get('name'):
+                return player_data['name']
     except Exception as e:
         print(f"Error extracting player name: {e}")
-    
+
     return "Unknown Player"
 
 def get_run_time(run_data: dict) -> str:

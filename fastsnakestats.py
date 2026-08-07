@@ -363,7 +363,7 @@ class FastSnakeStats(commands.Cog):
             return None
 
     async def get_complete_year_months(self) -> List[str]:
-        """YYYY-MM months with full FastSnakeStats daily coverage (live check)."""
+        """YYYY-MM months with full FastSnakeStats coverage (live check)."""
         return await github_cache_fetcher.get_complete_year_months()
 
     async def resolve_monthly_year_month(self, year_month: Optional[str] = None) -> Optional[str]:
@@ -2622,9 +2622,11 @@ class FastSnakeStats(commands.Cog):
             # Show date range
             if stats and stats.get('dateRange'):
                 date_range = stats['dateRange']
+                start = date_range.get('start') or date_range.get('earliest') or 'N/A'
+                end = date_range.get('end') or date_range.get('latest') or 'N/A'
                 embed.add_field(
                     name="Date Range",
-                    value=f"{date_range.get('start', 'N/A')} to {date_range.get('end', 'N/A')}",
+                    value=f"{start} to {end}",
                     inline=False
                 )
             
@@ -3052,7 +3054,7 @@ class FastSnakeStats(commands.Cog):
                 month = month.strip()
                 if not await github_cache_fetcher.is_year_month_complete(month):
                     await interaction.followup.send(
-                        f"❌ `{month}` does not have complete FastSnakeStats daily data yet. "
+                        f"❌ `{month}` does not have complete FastSnakeStats data yet. "
                         "Pick a month from the autocomplete list (computed live from the cache)."
                     )
                     return
