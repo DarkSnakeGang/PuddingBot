@@ -1,4 +1,4 @@
-"""Watch DarkSnakeGang mod / FastSnakeStats repos and announce updates."""
+"""Watch DarkSnakeGang mod repos and announce tip updates."""
 
 from __future__ import annotations
 
@@ -58,6 +58,7 @@ class TrackedRepo:
 
 
 # Display name → DarkSnakeGang repository
+# (FastSnakeStats omitted — daily data commits would spam the channel)
 TRACKED_REPOS: Tuple[TrackedRepo, ...] = (
     TrackedRepo("PuddingMod", "DarkSnakeGang", "GoogleSnakePudding"),
     TrackedRepo("LevelEditor", "DarkSnakeGang", "GoogleSnakeLevelEditor"),
@@ -65,7 +66,6 @@ TRACKED_REPOS: Tuple[TrackedRepo, ...] = (
     TrackedRepo("MouseMod", "DarkSnakeGang", "GoogleSnakeMouseMode"),
     TrackedRepo("VisibilityMod", "DarkSnakeGang", "GoogleSnakeDeleteStuffMod"),
     TrackedRepo("RemixMod", "DarkSnakeGang", "GoogleSnakeRemix"),
-    TrackedRepo("FastSnakeStats", "DarkSnakeGang", "FastSnakeStats"),
 )
 
 
