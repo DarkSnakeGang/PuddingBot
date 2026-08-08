@@ -178,7 +178,7 @@ class RepoWatcher(commands.Cog):
             )
             return
         short = sha[:7] if sha else "unknown"
-        message = f"{repo.name} was updated!\n{repo.url}/commit/{sha}"
+        message = f"{repo.name} was updated!"
         try:
             await channel.send(message)
             print(f"[repo-watch] Announced {repo.name} update ({short})")
