@@ -25,6 +25,8 @@ MONTHLY_REPORT_TZ = timezone(timedelta(hours=_MONTHLY_UTC_OFFSET))
 MASTERY_MODE_HS_ONLY = "High score modes only"
 MASTERY_MODE_NO_PEACEFUL = "Excluding Peaceful"
 MASTERY_MODE_GROUPS = (MASTERY_MODE_HS_ONLY, MASTERY_MODE_NO_PEACEFUL)
+# Shared Mode filter on explorer list tabs (FSS STATS_LIST_MODE_GROUPS)
+LIST_MODE_GROUPS = (MASTERY_MODE_HS_ONLY,)
 
 
 class FastSnakeStats(commands.Cog):
@@ -148,9 +150,12 @@ class FastSnakeStats(commands.Cog):
                         "boardCount", 1386
                     ),
                 }
+            empire = await github_cache_fetcher.get_chronicle_empire(
+                player_id=player_id, player_name=display_name
+            )
 
             if not player_records:
-                if not peak_stats and not career and not mastery:
+                if not peak_stats and not career and not mastery and not empire:
                     return None
                 return {
                     'player_name': display_name,
@@ -165,6 +170,7 @@ class FastSnakeStats(commands.Cog):
                     'longevity_best': longevity_best,
                     'improving': improving,
                     'mastery': mastery,
+                    'empire': empire,
                 }
 
             # Sort by date (most recent first)
@@ -183,6 +189,7 @@ class FastSnakeStats(commands.Cog):
                 'longevity_best': longevity_best,
                 'improving': improving,
                 'mastery': mastery,
+                'empire': empire,
             }
             
         except Exception as e:
@@ -865,6 +872,13 @@ class FastSnakeStats(commands.Cog):
         """Modes for Mastery filters, including HS-only / excluding-Peaceful groups."""
         options = list(MASTERY_MODE_GROUPS) + dm.get_ordered_gamemodes()
         return self._filter_setting_choices(options, current)
+
+    async def list_game_mode_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        """Modes for explorer list filters, including High score modes only."""
+        options = list(LIST_MODE_GROUPS) + dm.get_ordered_gamemodes()
+        return self._filter_setting_choices(options, current)
     
     def get_random_combination(
         self,
@@ -1079,6 +1093,32 @@ class FastSnakeStats(commands.Cog):
         ]
         return "\n".join(lines)
 
+    def _format_player_empire(self, empire: Optional[Dict]) -> str:
+        """Chronicle empire arc summary for a player profile."""
+        if not empire:
+            return "No Chronicle empire arc yet."
+        lines = []
+        peak = empire.get("peak") or {}
+        latest = empire.get("latest") or {}
+        if peak.get("count") is not None and peak.get("date"):
+            lines.append(f"**Peak:** {peak['count']} WRs on `{peak['date']}`")
+        if latest.get("count") is not None and latest.get("date"):
+            pct = latest.get("percentage")
+            pct_text = f" ({pct}%)" if pct is not None else ""
+            lines.append(f"**Now:** {latest['count']} WRs{pct_text} on `{latest['date']}`")
+        if empire.get("peakDrop") is not None:
+            lines.append(f"**Drop from peak:** −{empire['peakDrop']}")
+        tps = empire.get("turningPoints") or []
+        if tps:
+            tp = tps[0]
+            sign = "+" if (tp.get("delta") or 0) >= 0 else ""
+            lines.append(
+                f"**Biggest turn:** `{tp.get('date')}` {sign}{tp.get('delta')} "
+                f"({tp.get('from')} → {tp.get('to')})"
+            )
+        lines.append("_Use `/chronicle section:Empire` for the full arc._")
+        return "\n".join(lines) if lines else "No Chronicle empire arc yet."
+
     def create_player_embed(self, player_data: Dict, page: int = 0) -> discord.Embed:
         """Create a rich embed for player display with pagination"""
         activity = player_data.get('recent_activity') or []
@@ -1126,6 +1166,14 @@ class FastSnakeStats(commands.Cog):
             value=self._format_player_peak_stats(player_data.get('peak_stats')),
             inline=False
         )
+
+        empire = player_data.get('empire')
+        if empire:
+            embed.add_field(
+                name="🏰 Empire",
+                value=self._format_player_empire(empire),
+                inline=False
+            )
 
         longevity = player_data.get('longevity_best') or {}
         embed.add_field(
@@ -3132,7 +3180,7 @@ class FastSnakeStats(commands.Cog):
     @app_commands.describe(
         filter="all = all-time holds, standing = still unbroken",
         tied="All / untied-only / tied-only holds",
-        game_mode="Optional game mode filter",
+        game_mode="Optional mode or High score modes only",
         apple_amount="Optional apple count filter",
         speed="Optional speed filter",
         size="Optional size filter",
@@ -3150,7 +3198,7 @@ class FastSnakeStats(commands.Cog):
         ],
     )
     @app_commands.autocomplete(
-        game_mode=record_game_mode_autocomplete,
+        game_mode=list_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
@@ -3250,14 +3298,14 @@ class FastSnakeStats(commands.Cog):
 
     @app_commands.command(name="contested", description="Categories with the most WR flips")
     @app_commands.describe(
-        game_mode="Optional game mode filter",
+        game_mode="Optional mode or High score modes only",
         apple_amount="Optional apple count filter",
         speed="Optional speed filter",
         size="Optional size filter",
         run_mode="Optional run mode filter; Timed = all non-High Score",
     )
     @app_commands.autocomplete(
-        game_mode=record_game_mode_autocomplete,
+        game_mode=list_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
@@ -3309,7 +3357,7 @@ class FastSnakeStats(commands.Cog):
     @app_commands.command(name="popularity", description="Categories with the most unique WR holders")
     @app_commands.describe(
         tied="Both / untied / tied present WRs",
-        game_mode="Optional game mode filter",
+        game_mode="Optional mode or High score modes only",
         apple_amount="Optional apple count filter",
         speed="Optional speed filter",
         size="Optional size filter",
@@ -3321,7 +3369,7 @@ class FastSnakeStats(commands.Cog):
         app_commands.Choice(name="Tied", value="tied"),
     ])
     @app_commands.autocomplete(
-        game_mode=record_game_mode_autocomplete,
+        game_mode=list_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
@@ -3377,14 +3425,14 @@ class FastSnakeStats(commands.Cog):
         description="Least-flipped / longest-unchanged held categories",
     )
     @app_commands.describe(
-        game_mode="Optional game mode filter",
+        game_mode="Optional mode or High score modes only",
         apple_amount="Optional apple count filter",
         speed="Optional speed filter",
         size="Optional size filter",
         run_mode="Optional run mode filter; Timed = all non-High Score",
     )
     @app_commands.autocomplete(
-        game_mode=record_game_mode_autocomplete,
+        game_mode=list_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
@@ -3594,14 +3642,14 @@ class FastSnakeStats(commands.Cog):
         description="Lottery-tier unicorn category holds (alias of /legends show:unicorns)",
     )
     @app_commands.describe(
-        game_mode="Optional game mode filter",
+        game_mode="Optional mode or High score modes only",
         apple_amount="Optional apple count filter",
         speed="Optional speed filter",
         size="Optional size filter",
         run_mode="Optional run mode filter; Timed = all non-High Score",
     )
     @app_commands.autocomplete(
-        game_mode=record_game_mode_autocomplete,
+        game_mode=list_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
@@ -3660,7 +3708,7 @@ class FastSnakeStats(commands.Cog):
     )
     @app_commands.describe(
         show="All (merged), Legends only, or Unicorns only",
-        game_mode="Optional game mode filter",
+        game_mode="Optional mode or High score modes only",
         apple_amount="Optional apple count filter",
         speed="Optional speed filter",
         size="Optional size filter",
@@ -3672,7 +3720,7 @@ class FastSnakeStats(commands.Cog):
         app_commands.Choice(name="Unicorns", value="unicorns"),
     ])
     @app_commands.autocomplete(
-        game_mode=record_game_mode_autocomplete,
+        game_mode=list_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
@@ -3733,7 +3781,7 @@ class FastSnakeStats(commands.Cog):
     )
     @app_commands.describe(
         tier="Optional difficulty tier filter",
-        game_mode="Optional game mode filter",
+        game_mode="Optional mode or High score modes only",
         apple_amount="Optional apple count filter",
         speed="Optional speed filter",
         size="Optional size filter",
@@ -3750,7 +3798,7 @@ class FastSnakeStats(commands.Cog):
         app_commands.Choice(name="Inhuman", value="Inhuman"),
     ])
     @app_commands.autocomplete(
-        game_mode=record_game_mode_autocomplete,
+        game_mode=list_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
@@ -3823,6 +3871,357 @@ class FastSnakeStats(commands.Cog):
         except Exception as e:
             print(f"Error in unheld command: {e}")
             await interaction.followup.send("❌ An error occurred while fetching unheld categories.")
+
+    def create_chronicle_era_embed(self, era: Dict) -> discord.Embed:
+        """Era newspaper embed for a loud WR day."""
+        date = era.get("date") or "?"
+        flips = era.get("flips", 0)
+        new_wrs = era.get("newWrs", 0)
+        debuts = era.get("debuts") or []
+        embed = discord.Embed(
+            title=f"📰 Era Newspaper — {date}",
+            description=(
+                f"**{flips}** flip{'s' if flips != 1 else ''} · "
+                f"**{new_wrs}** new WR{'s' if new_wrs != 1 else ''}"
+                + (f" · **{len(debuts)}** setting debut{'s' if len(debuts) != 1 else ''}" if debuts else "")
+            ),
+            color=0x8b5a2b,
+            timestamp=datetime.now(),
+        )
+        top_flips = era.get("topFlips") or []
+        if top_flips:
+            lines = []
+            for flip in top_flips[:8]:
+                cat = self._format_category_line(flip.get("category", ""))
+                frm = flip.get("from") or "—"
+                to = flip.get("to") or "?"
+                time_str = dm.parse_time(flip.get("time") or "") if flip.get("time") else ""
+                tier = flip.get("tier") or ""
+                bits = [f"{frm} → **{to}**"]
+                if time_str:
+                    bits.append(time_str)
+                if tier:
+                    bits.append(tier)
+                lines.append(f"{cat}\n{' · '.join(bits)}")
+            embed.add_field(name="Top flips", value="\n".join(lines)[:1020], inline=False)
+        gainers = era.get("netGainers") or []
+        if gainers:
+            embed.add_field(
+                name="Net gainers",
+                value="\n".join(
+                    f"**{g.get('name', '?')}** +{g.get('delta', 0)} → {g.get('to', '?')}"
+                    for g in gainers[:8]
+                ),
+                inline=True,
+            )
+        losers = era.get("netLosers") or []
+        if losers:
+            embed.add_field(
+                name="Net losers",
+                value="\n".join(
+                    f"**{g.get('name', '?')}** {g.get('delta', 0)} → {g.get('to', '?')}"
+                    for g in losers[:8]
+                ),
+                inline=True,
+            )
+        if debuts:
+            embed.add_field(
+                name="Setting debuts",
+                value="\n".join(
+                    f"**{d.get('kindLabel') or d.get('kind')}** `{d.get('value')}`"
+                    + (f" — {d.get('player')}" if d.get("player") else "")
+                    for d in debuts[:10]
+                )[:1020],
+                inline=False,
+            )
+        embed.set_footer(text="Data from FastSnakeStats • Chronicle")
+        return embed
+
+    def create_chronicle_empire_embed(self, empire: Dict) -> discord.Embed:
+        """Empire arc embed for a player's WR-count history."""
+        name = empire.get("name") or "Unknown"
+        peak = empire.get("peak") or {}
+        latest = empire.get("latest") or {}
+        peak_str = (
+            f"{peak.get('count')} on `{peak.get('date')}`"
+            if peak.get("count") is not None else "—"
+        )
+        latest_pct = latest.get("percentage")
+        latest_str = (
+            f"{latest.get('count')} on `{latest.get('date')}`"
+            + (f" ({latest_pct}%)" if latest_pct is not None else "")
+            if latest.get("count") is not None else "—"
+        )
+        embed = discord.Embed(
+            title=f"🏰 Empire — {name}",
+            description=(
+                f"**Peak:** {peak_str}\n"
+                f"**Now:** {latest_str}\n"
+                f"**Drop from peak:** −{empire.get('peakDrop', 0)}"
+            ),
+            color=0x6b4c9a,
+            timestamp=datetime.now(),
+        )
+        tps = empire.get("turningPoints") or []
+        if tps:
+            lines = []
+            for tp in tps[:8]:
+                delta = tp.get("delta") or 0
+                sign = "+" if delta >= 0 else ""
+                lines.append(
+                    f"`{tp.get('date')}` **{sign}{delta}** "
+                    f"({tp.get('from')} → {tp.get('to')})"
+                )
+            embed.add_field(name="Turning points", value="\n".join(lines), inline=False)
+        series = empire.get("series") or []
+        if series:
+            embed.add_field(
+                name="Arc span",
+                value=f"`{series[0].get('d')}` → `{series[-1].get('d')}` · {len(series)} points",
+                inline=False,
+            )
+        embed.set_footer(text="Data from FastSnakeStats • Chronicle")
+        return embed
+
+    def create_chronicle_war_embed(self, war: Dict, page: int = 0) -> discord.Embed:
+        """Board war reel — WR handoff events for one category."""
+        category = war.get("category") or ""
+        events = war.get("events") or []
+        per_page = 8
+        total_pages = max(1, (len(events) + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        start = page * per_page
+        page_events = events[start:start + per_page]
+
+        embed = discord.Embed(
+            title="⚔️ Board War Reel",
+            description=(
+                f"{self._format_category_line(category)}\n"
+                f"**{war.get('flips', 0)}** flips · **{war.get('eventCount', len(events))}** events"
+                + (" · currently tied" if war.get("tied") else "")
+            ),
+            color=0xb33a3a,
+            timestamp=datetime.now(),
+        )
+        lines = []
+        for event in page_events:
+            runs = event.get("runs") or []
+            names = ", ".join(r.get("n") or "?" for r in runs) or "?"
+            times = []
+            for run in runs:
+                t = run.get("t")
+                if t:
+                    times.append(dm.parse_time(t))
+            time_bit = f" · {' / '.join(times)}" if times else ""
+            lines.append(f"`{event.get('d')}` **{names}**{time_bit}")
+        if lines:
+            embed.add_field(name="Handoffs", value="\n".join(lines), inline=False)
+        embed.set_footer(
+            text=f"Data from FastSnakeStats • Chronicle • Page {page + 1}/{total_pages}"
+        )
+        return embed
+
+    def create_chronicle_wars_list_embed(self, wars: List[Dict], page: int = 0) -> discord.Embed:
+        """Top contested board wars list."""
+        per_page = 10
+        total_pages = max(1, (len(wars) + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        start = page * per_page
+        page_wars = wars[start:start + per_page]
+        embed = discord.Embed(
+            title="⚔️ Most Contested Board Wars",
+            description="Use `/chronicle section:War` with category filters to open a reel.",
+            color=0xb33a3a,
+            timestamp=datetime.now(),
+        )
+        lines = []
+        for i, war in enumerate(page_wars, start + 1):
+            tied = " · tied" if war.get("tied") else ""
+            lines.append(
+                f"**{i}.** {self._format_category_line(war.get('category', ''))}\n"
+                f"{war.get('flips', 0)} flips · {war.get('eventCount', 0)} events{tied}"
+            )
+        embed.add_field(name="Wars", value="\n".join(lines) or "None", inline=False)
+        embed.set_footer(
+            text=f"Data from FastSnakeStats • Chronicle • Page {page + 1}/{total_pages}"
+        )
+        return embed
+
+    def create_chronicle_debuts_embed(self, intros: List[Dict], page: int = 0) -> discord.Embed:
+        """Setting introductions / first-seen debuts."""
+        per_page = 12
+        total_pages = max(1, (len(intros) + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        start = page * per_page
+        page_items = intros[start:start + per_page]
+        embed = discord.Embed(
+            title="✨ Setting Debuts",
+            description="First verified appearance of each setting in the runs archive.",
+            color=0x2e8b57,
+            timestamp=datetime.now(),
+        )
+        lines = []
+        for item in page_items:
+            kind = item.get("kindLabel") or item.get("kind") or "?"
+            player = item.get("player") or "?"
+            lines.append(
+                f"`{item.get('date')}` **{kind}** `{item.get('value')}` — {player}"
+            )
+        embed.add_field(name="Introductions", value="\n".join(lines) or "None", inline=False)
+        embed.set_footer(
+            text=f"Data from FastSnakeStats • Chronicle • Page {page + 1}/{total_pages}"
+        )
+        return embed
+
+    @app_commands.command(
+        name="chronicle",
+        description="Chronicle: era newspaper, empire arcs, board wars, setting debuts",
+    )
+    @app_commands.describe(
+        section="Era newspaper, empire arc, board war reel, or setting debuts",
+        player="Player name for Empire (defaults to top empire)",
+        date="Era date YYYY-MM-DD (defaults to latest loud day)",
+        game_mode="Optional mode filter for War",
+        apple_amount="Optional apple count filter for War",
+        speed="Optional speed filter for War",
+        size="Optional size filter for War",
+        run_mode="Optional run mode filter for War",
+        list_wars="If true with War section, list top wars instead of one reel",
+    )
+    @app_commands.choices(section=[
+        app_commands.Choice(name="Era", value="era"),
+        app_commands.Choice(name="Empire", value="empire"),
+        app_commands.Choice(name="War", value="war"),
+        app_commands.Choice(name="Debuts", value="debuts"),
+    ])
+    @app_commands.autocomplete(
+        game_mode=record_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+        run_mode=record_run_mode_autocomplete,
+    )
+    async def chronicle_command(
+        self,
+        interaction: discord.Interaction,
+        section: app_commands.Choice[str],
+        player: Optional[str] = None,
+        date: Optional[str] = None,
+        game_mode: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+        list_wars: Optional[bool] = None,
+    ):
+        await interaction.response.defer()
+        try:
+            section_key = section.value
+            data = await github_cache_fetcher.fetch_chronicle()
+            if not data:
+                await interaction.followup.send("❌ Chronicle data unavailable.")
+                return
+
+            if section_key == "era":
+                era = await github_cache_fetcher.get_chronicle_era(date)
+                if not era:
+                    msg = (
+                        f"❌ No era found for `{date}`."
+                        if date else "❌ No era newspaper data found."
+                    )
+                    await interaction.followup.send(msg)
+                    return
+                await interaction.followup.send(embed=self.create_chronicle_era_embed(era))
+                return
+
+            if section_key == "empire":
+                empire = await github_cache_fetcher.get_chronicle_empire(
+                    player_name=player
+                )
+                if not empire:
+                    msg = (
+                        f"❌ No empire arc found for **{player}**."
+                        if player else "❌ No empire data found."
+                    )
+                    await interaction.followup.send(msg)
+                    return
+                await interaction.followup.send(
+                    embed=self.create_chronicle_empire_embed(empire)
+                )
+                return
+
+            if section_key == "debuts":
+                intros = await github_cache_fetcher.get_chronicle_introductions()
+                if not intros:
+                    await interaction.followup.send("❌ No setting debuts found.")
+                    return
+                embed = self.create_chronicle_debuts_embed(intros, page=0)
+                total_pages = max(1, (len(intros) + 11) // 12)
+                if total_pages > 1:
+                    view = ListPaginationView(
+                        interaction.user.id,
+                        total_pages,
+                        lambda page: self.create_chronicle_debuts_embed(intros, page),
+                    )
+                    await interaction.followup.send(embed=embed, view=view)
+                else:
+                    await interaction.followup.send(embed=embed)
+                return
+
+            # War section
+            wars = await github_cache_fetcher.get_chronicle_wars()
+            if not wars:
+                await interaction.followup.send("❌ No board war data found.")
+                return
+
+            filters = dict(
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+                run_mode=run_mode,
+            )
+            # No filters / explicit list: top contested wars. Filters: open matching reel.
+            if list_wars or not self._any_category_filters(**filters):
+                embed = self.create_chronicle_wars_list_embed(wars, page=0)
+                total_pages = max(1, (len(wars) + 9) // 10)
+                if total_pages > 1:
+                    view = ListPaginationView(
+                        interaction.user.id,
+                        total_pages,
+                        lambda page: self.create_chronicle_wars_list_embed(wars, page),
+                    )
+                    await interaction.followup.send(embed=embed, view=view)
+                else:
+                    await interaction.followup.send(embed=embed)
+                return
+
+            filtered = self._filter_category_rows(wars, **filters)
+            if not filtered:
+                label = self._format_category_filters(**filters)
+                await interaction.followup.send(
+                    f"❌ No board wars match `{label}`."
+                )
+                return
+
+            war = filtered[0]
+            events = war.get("events") or []
+            embed = self.create_chronicle_war_embed(war, page=0)
+            total_pages = max(1, (len(events) + 7) // 8)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_chronicle_war_embed(war, page),
+                )
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in chronicle command: {e}")
+            await interaction.followup.send(
+                "❌ An error occurred while fetching Chronicle data."
+            )
 
     @app_commands.command(
         name="activity",

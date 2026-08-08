@@ -56,7 +56,10 @@ GAMEMODES = {
     "Magnet": {"visible": True, "icon": "https://i.ibb.co/nMbMjjfL/trophy-18-png.png", "id": "trophy_19"},
     "Gate": {"visible": True, "icon": "https://i.ibb.co/1tp8JqBM/trophy-19-png.png", "id": "trophy_20"},
     "Bridge": {"visible": True, "icon": "https://i.ibb.co/Kj7tYtM7/trophy-20.png", "id": "trophy_22"},
-    "Peaceful": {"visible": True, "icon": "https://i.ibb.co/jvrCYD8r/trophy-17-png.png", "id": "trophy_21"}
+    "Peaceful": {"visible": True, "icon": "https://i.ibb.co/jvrCYD8r/trophy-17-png.png", "id": "trophy_21"},
+    # Category Extensions level modes (FastSnakeStats CE Mix)
+    "Chess": {"visible": True, "icon": "https://i.postimg.cc/ZqK0CB95/bn.png", "id": "trophy_chess"},
+    "Burger": {"visible": True, "icon": "https://i.postimg.cc/13m2Cr16/burger.png", "id": "trophy_burger"},
 }
 
 RUN_MODES = {
@@ -111,12 +114,16 @@ SETTING_EMOJI_NAMES: Dict[str, str] = {
     "Gate": "gate_mode",
     "Bridge": "bridge_mode",
     "Peaceful": "peaceful_mode",
+    "Chess": "chess_mode",
+    "Burger": "burger_mode",
 }
 
 # Alternate emoji names to try if the primary is missing
 SETTING_EMOJI_NAME_ALIASES: Dict[str, tuple] = {
     "Yin Yang": ("yin_yang_mode", "yinyang_mode", "yin_yang", "yy_mode"),
     "Slow": ("speed_02", "slow_speed"),
+    "Chess": ("chess_mode", "trophy_chess", "bn"),
+    "Burger": ("burger_mode", "trophy_burger"),
 }
 
 
@@ -357,10 +364,10 @@ def get_ordered_run_modes() -> list:
     return ["25 Apples", "50 Apples", "100 Apples", "All Apples", "High Score"]
 
 
-# Modes that have a High Score leaderboard on main snake_game
+# Modes that have a High Score leaderboard (main snake_game + CE level modes)
 HIGHSCORE_MODES = frozenset({
     "Wall", "Portal", "Key", "Sokoban", "Poison", "Minesweeper",
-    "Statue", "Shield", "Hotdog", "Gate", "Bridge",
+    "Statue", "Shield", "Hotdog", "Gate", "Bridge", "Chess", "Burger",
 })
 
 # Modes whose Tally High Score lives on snake_game_ce (FastSnakeStats tally-boards.js)
@@ -368,6 +375,9 @@ TALLY_CE_HIGHSCORE_MODES = frozenset({
     "Classic", "Cheese", "Borderless", "Twin", "Winged", "Yin Yang",
     "Dimension", "Light", "Arrow", "Magnet",
 })
+
+# CE level modes (Chess/Burger) — full HS columns like typical HS modes
+CE_LEVEL_HIGHSCORE_MODES = frozenset({"Chess", "Burger"})
 
 DIFFICULTY_TIERS = [
     "Free", "Warmup", "Easy", "Medium", "Hard", "Mythic", "Lottery", "Inhuman",
@@ -385,6 +395,7 @@ MODE_BASE_TIER = {
     "Statue": "Easy",
     "Arrow": "Easy",
     "Light": "Easy",
+    "Hotdog": "Easy",
     "Wall": "Medium",
     "Portal": "Medium",
     "Twin": "Medium",
@@ -392,10 +403,11 @@ MODE_BASE_TIER = {
     "Poison": "Medium",
     "Minesweeper": "Medium",
     "Shield": "Medium",
-    "Hotdog": "Medium",
     "Sokoban": "Hard",
     "Gate": "Hard",
     "Bridge": "Medium",
+    "Chess": "Medium",
+    "Burger": "Medium",
 }
 
 _COUNT_MORE_EASIER = ["Bomb", "10 Apples", "5 Apples", "Dice", "3 Apples", "1 Apple", "Tally"]
@@ -408,7 +420,7 @@ _APPLE_RUNS = ["25 Apples", "50 Apples", "100 Apples", "All Apples"]
 
 
 def is_high_score_mode(gamemode: str) -> bool:
-    """True if this mode has High Score on the main snake_game boards."""
+    """True if this mode has High Score columns (typical HS + CE Chess/Burger)."""
     return gamemode in HIGHSCORE_MODES
 
 
@@ -417,9 +429,14 @@ def is_tally_ce_highscore_mode(gamemode: str) -> bool:
     return gamemode in TALLY_CE_HIGHSCORE_MODES
 
 
+def is_ce_level_highscore_mode(gamemode: str) -> bool:
+    """True for CE level modes (Chess/Burger) with full High Score columns."""
+    return gamemode in CE_LEVEL_HIGHSCORE_MODES
+
+
 def allows_high_score(apple_amount: str, gamemode: str) -> bool:
     """Whether High Score exists for this count+mode (FSS shouldShowHighScoreColumn)."""
-    if is_high_score_mode(gamemode):
+    if is_high_score_mode(gamemode) or is_ce_level_highscore_mode(gamemode):
         return True
     return apple_amount == "Tally" and is_tally_ce_highscore_mode(gamemode)
 

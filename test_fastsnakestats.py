@@ -93,6 +93,35 @@ async def test_github_cache():
     print("✅ FastSnakeStats runs-derived integration test completed!")
     return True
 
+async def test_chronicle_and_ce():
+    """Test Chronicle + Chess CE mode wiring."""
+    print("\nTesting Chronicle + CE modes...")
+    print("=" * 40)
+
+    assert "Chess" in dm.GAMEMODES and "Burger" in dm.GAMEMODES
+    assert dm.allows_high_score("1 Apple", "Chess")
+    print("✅ Chess/Burger modes registered")
+
+    chronicle = await github_cache_fetcher.fetch_chronicle()
+    if not chronicle:
+        print("❌ Chronicle unavailable")
+        return False
+    era = await github_cache_fetcher.get_chronicle_era()
+    empire = await github_cache_fetcher.get_chronicle_empire()
+    wars = await github_cache_fetcher.get_chronicle_wars()
+    intros = await github_cache_fetcher.get_chronicle_introductions()
+    print(f"✅ Chronicle loaded (era={era and era.get('date')}, empire={empire and empire.get('name')})")
+    print(f"   Wars: {len(wars or [])}, Debuts: {len(intros or [])}")
+
+    settings_key = dm.get_settings_key("1 Apple", "Normal", "Standard", "Chess", "25 Apples")
+    world_records = await github_cache_fetcher.fetch_current_world_records()
+    if world_records and settings_key in world_records and world_records[settings_key]:
+        run = world_records[settings_key][0]
+        print(f"✅ Chess WR: {dm.get_player_name(run)} · {dm.get_run_time(run)}")
+    else:
+        print("⚠️ No Chess WR for sample board (may be empty)")
+    return True
+
 async def test_data_management():
     """Test data management functions"""
     print("\nTesting Data Management...")
@@ -130,7 +159,12 @@ async def main():
     """Main test function"""
     try:
         await test_data_management()
-        await test_github_cache()
+        ok = await test_github_cache()
+        if not ok:
+            return False
+        ok = await test_chronicle_and_ce()
+        if not ok:
+            return False
     except Exception as e:
         print(f"❌ Test failed with error: {e}")
         return False

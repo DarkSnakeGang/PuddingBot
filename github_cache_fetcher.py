@@ -14,6 +14,7 @@ class GitHubCacheFetcher:
         self.player_stats_url = f"{self.base_url}/time-travel-cache/metadata/player-stats.json"
         self.statistics_explorer_url = f"{self.base_url}/time-travel-cache/metadata/statistics-explorer.json"
         self.mastery_challenge_url = f"{self.base_url}/time-travel-cache/metadata/mastery-challenge.json"
+        self.chronicle_url = f"{self.base_url}/time-travel-cache/metadata/chronicle.json"
         # Sibling FastSnakeStats checkout used when GitHub lags
         self._local_fss_root = os.path.normpath(os.path.join(
             os.path.dirname(__file__),
@@ -33,6 +34,9 @@ class GitHubCacheFetcher:
         self._local_mastery_challenge_path = os.path.join(
             self._local_fss_root, 'metadata', 'mastery-challenge.json'
         )
+        self._local_chronicle_path = os.path.join(
+            self._local_fss_root, 'metadata', 'chronicle.json'
+        )
         self.fallback_to_api = True
         self._runs_dates: Optional[Dict] = None
         self._timelines: Optional[Dict] = None
@@ -42,6 +46,8 @@ class GitHubCacheFetcher:
         self._statistics_explorer_cache_fetched_at: Optional[datetime] = None
         self._mastery_challenge_cache: Optional[Dict] = None
         self._mastery_challenge_cache_fetched_at: Optional[datetime] = None
+        self._chronicle_cache: Optional[Dict] = None
+        self._chronicle_cache_fetched_at: Optional[datetime] = None
 
     def _load_local_json(self, path: str) -> Optional[Dict]:
         if not os.path.isfile(path):
@@ -760,6 +766,147 @@ class GitHubCacheFetcher:
                 out['playerId'] = pid
                 return out
         return None
+
+    def _load_local_chronicle(self) -> Optional[Dict]:
+        return self._load_local_json(self._local_chronicle_path)
+
+    def _prefer_chronicle(self, remote: Optional[Dict]) -> Optional[Dict]:
+        """Prefer local chronicle JSON when it is newer than GitHub."""
+        local = self._load_local_chronicle()
+        if not local:
+            return remote
+        if not remote:
+            return local
+        local_updated = ((local.get('meta') or {}).get('lastUpdated') or '')
+        remote_updated = ((remote.get('meta') or {}).get('lastUpdated') or '')
+        if local_updated and local_updated > remote_updated:
+            return local
+        local_eras = ((local.get('meta') or {}).get('eraCount') or 0)
+        remote_eras = ((remote.get('meta') or {}).get('eraCount') or 0)
+        if local_eras > remote_eras:
+            return local
+        return remote
+
+    async def fetch_chronicle(self, force_refresh: bool = False) -> Optional[Dict]:
+        """Fetch chronicle metadata (cached in memory for 1 hour)."""
+        try:
+            if (
+                not force_refresh
+                and self._chronicle_cache is not None
+                and self._chronicle_cache_fetched_at is not None
+                and (datetime.utcnow() - self._chronicle_cache_fetched_at).total_seconds() < 3600
+            ):
+                return self._chronicle_cache
+
+            response = requests.get(self.chronicle_url, timeout=60)
+            remote = response.json() if response.ok else None
+            if not response.ok:
+                print(f'GitHub chronicle not available ({response.status_code})')
+
+            data = self._prefer_chronicle(remote)
+            if data:
+                self._chronicle_cache = data
+                self._chronicle_cache_fetched_at = datetime.utcnow()
+                return data
+
+            local = self._prefer_chronicle(None)
+            if local:
+                self._chronicle_cache = local
+                self._chronicle_cache_fetched_at = datetime.utcnow()
+                return local
+            return self._chronicle_cache
+        except Exception as error:
+            print(f'Error fetching chronicle: {error}')
+            local = self._prefer_chronicle(None)
+            if local:
+                self._chronicle_cache = local
+                self._chronicle_cache_fetched_at = datetime.utcnow()
+                return local
+            return self._chronicle_cache
+
+    async def get_chronicle_era(self, date: Optional[str] = None) -> Optional[Dict]:
+        """Get an era newspaper day (default: latest chronological loud day)."""
+        data = await self.fetch_chronicle()
+        if not data:
+            return None
+        eras = list(data.get('eras') or [])
+        if not eras:
+            return None
+        eras_chrono = sorted(eras, key=lambda e: e.get('date') or '')
+        if date:
+            for era in eras_chrono:
+                if era.get('date') == date:
+                    return era
+            return None
+        defaults = (data.get('meta') or {}).get('defaults') or {}
+        default_date = defaults.get('eraDate')
+        if default_date:
+            for era in eras_chrono:
+                if era.get('date') == default_date:
+                    return era
+        return eras_chrono[-1] if eras_chrono else None
+
+    async def get_chronicle_empire(
+        self, player_id: Optional[str] = None, player_name: Optional[str] = None
+    ) -> Optional[Dict]:
+        """Look up a player's empire arc (default: top empire by peak drop)."""
+        data = await self.fetch_chronicle()
+        if not data:
+            return None
+        empires = list(data.get('empires') or [])
+        if not empires:
+            return None
+        if player_id:
+            for empire in empires:
+                if empire.get('id') == player_id:
+                    return empire
+        name_lower = (player_name or '').lower().strip()
+        if name_lower:
+            for empire in empires:
+                if (empire.get('name') or '').lower() == name_lower:
+                    return empire
+            return None
+        defaults = (data.get('meta') or {}).get('defaults') or {}
+        default_id = defaults.get('empireId')
+        if default_id:
+            for empire in empires:
+                if empire.get('id') == default_id:
+                    return empire
+        return empires[0]
+
+    async def get_chronicle_wars(self) -> Optional[List[Dict]]:
+        """Get contested board war reels ranked by flips."""
+        data = await self.fetch_chronicle()
+        if not data:
+            return None
+        return list(data.get('wars') or [])
+
+    async def get_chronicle_war(self, category: Optional[str] = None) -> Optional[Dict]:
+        """Get one board war (default: top contested / meta default)."""
+        wars = await self.get_chronicle_wars()
+        if not wars:
+            return None
+        if category:
+            for war in wars:
+                if war.get('category') == category:
+                    return war
+            return None
+        data = await self.fetch_chronicle()
+        defaults = ((data or {}).get('meta') or {}).get('defaults') or {}
+        default_cat = defaults.get('warCategory')
+        if default_cat:
+            for war in wars:
+                if war.get('category') == default_cat:
+                    return war
+        return wars[0]
+
+    async def get_chronicle_introductions(self) -> Optional[List[Dict]]:
+        """First-seen settings (count/speed/size/mode/run) from runs archive."""
+        data = await self.fetch_chronicle()
+        if not data:
+            return None
+        return list(data.get('introductions') or [])
+
 
 # Create global instance
 github_cache_fetcher = GitHubCacheFetcher()
