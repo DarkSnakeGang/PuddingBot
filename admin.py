@@ -176,7 +176,19 @@ async def _apply_repo_update(set_status: StatusCallback) -> tuple[bool, bool, st
         return False, False, f"Update failed during reset:\n```\n{error_output[:1500]}\n```"
 
     clean_result = await _run_command_async(
-        ["git", "clean", "-fd", "-e", ".env", "-e", ".env.*", "-e", "emoji_map.json"],
+        [
+            "git",
+            "clean",
+            "-fd",
+            "-e",
+            ".env",
+            "-e",
+            ".env.*",
+            "-e",
+            "emoji_map.json",
+            "-e",
+            "repo_watch_state.json",
+        ],
         timeout=60,
     )
     if clean_result.returncode != 0:

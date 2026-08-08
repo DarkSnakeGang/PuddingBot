@@ -1,4 +1,5 @@
 .env
 emoji_map.json
+repo_watch_state.json
 __pycache__
 api_key
