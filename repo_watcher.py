@@ -25,9 +25,10 @@ REPO_WATCH_ENABLED = os.getenv("REPO_WATCH_ENABLED", "1").strip().lower() not in
 )
 
 try:
-    REPO_WATCH_MINUTES = max(1, int(os.getenv("REPO_WATCH_MINUTES", "30")))
+    # Default: one digest every 12 hours
+    REPO_WATCH_MINUTES = max(1, int(os.getenv("REPO_WATCH_MINUTES", "720")))
 except ValueError:
-    REPO_WATCH_MINUTES = 30
+    REPO_WATCH_MINUTES = 720
 
 STATE_PATH = os.path.join(
     os.path.dirname(__file__),
@@ -147,7 +148,8 @@ class RepoWatcher(commands.Cog):
             names = ", ".join(r.name for r in TRACKED_REPOS)
             print(
                 f"[repo-watch] Enabled — checking {len(TRACKED_REPOS)} repos "
-                f"every {REPO_WATCH_MINUTES} minutes ({names})"
+                f"every {REPO_WATCH_MINUTES} minutes "
+                f"({REPO_WATCH_MINUTES / 60:.0f}h digest) ({names})"
             )
         else:
             print("[repo-watch] Disabled (REPO_WATCH_ENABLED=0)")
@@ -169,21 +171,28 @@ class RepoWatcher(commands.Cog):
             )
             return None
 
-    async def _announce(self, repo: TrackedRepo, sha: str) -> None:
+    async def _announce(self, names: List[str]) -> None:
+        """Post one digest listing which mods were updated (no links)."""
+        if not names:
+            return
         channel = await self._get_announce_channel()
         if channel is None:
             print(
-                f"[repo-watch] Skipping announce for {repo.name} — "
+                f"[repo-watch] Skipping announce for {', '.join(names)} — "
                 f"channel {REPO_WATCH_CHANNEL_ID} unavailable"
             )
             return
-        short = sha[:7] if sha else "unknown"
-        message = f"{repo.name} was updated!"
+        if len(names) == 1:
+            message = f"{names[0]} was updated!"
+        elif len(names) == 2:
+            message = f"{names[0]} and {names[1]} were updated!"
+        else:
+            message = f"{', '.join(names[:-1])}, and {names[-1]} were updated!"
         try:
             await channel.send(message)
-            print(f"[repo-watch] Announced {repo.name} update ({short})")
+            print(f"[repo-watch] Announced updates: {', '.join(names)}")
         except Exception as error:
-            print(f"[repo-watch] Failed to announce {repo.name}: {error}")
+            print(f"[repo-watch] Failed to announce updates: {error}")
 
     async def probe_once(self, announce: bool = True) -> List[str]:
         """Probe all repos. Returns display names that changed."""
@@ -212,11 +221,11 @@ class RepoWatcher(commands.Cog):
                     f"[repo-watch] {repo.name} tip changed: "
                     f"{previous[:7]} → {sha[:7]}"
                 )
-                if announce:
-                    await self._announce(repo, sha)
 
             self._known_shas = updated_state
             _save_state(updated_state)
+            if announce and changed:
+                await self._announce(changed)
         return changed
 
     @tasks.loop(minutes=REPO_WATCH_MINUTES)
@@ -227,7 +236,7 @@ class RepoWatcher(commands.Cog):
             if not changed:
                 print("[repo-watch] No updates")
             else:
-                print(f"[repo-watch] Announced: {', '.join(changed)}")
+                print(f"[repo-watch] Digest: {', '.join(changed)}")
         except Exception as error:
             print(f"[repo-watch] Probe failed: {error}")
 
