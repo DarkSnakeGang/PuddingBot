@@ -813,7 +813,7 @@ class FastSnakeStats(commands.Cog):
                 except Exception as error:
                     print(f"[wr-watch] Failed to announce {category}: {error}")
 
-    @tasks.loop(minutes=30)
+    @tasks.loop(hours=24)
     async def wr_watch_task(self) -> None:
         try:
             print("[wr-watch] Probing watched categories…")
@@ -4594,7 +4594,7 @@ class FastSnakeStats(commands.Cog):
             await interaction.followup.send(
                 f"Watching {self._format_category_line(category)} in this channel.\n"
                 f"Current: {current}\n"
-                f"I'll ping you here when the WR changes (checked about every 30 minutes).",
+                f"I'll ping you here when the WR changes (checked about once a day).",
                 ephemeral=True,
             )
         except Exception as e:
