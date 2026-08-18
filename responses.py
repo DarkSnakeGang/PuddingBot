@@ -164,11 +164,11 @@ def clear_context():
         - /legends - Mythic/Lottery holds (show=All|Legends|Unicorns; optional category filters; High score modes only)
         - /unheld - Never-held categories, easiest first (optional difficulty tier + category filters; High score modes only; Timed = non-HS)
         - /activity - Yearly new-WR activity (day the #1 actually changed)
-        - /caption - Add an ESMBot-style caption bar to an image (text; optional attachment/link)
+        - /caption - Add an ESMBot-style caption bar to an image or GIF (text; optional attachment/link)
         - Select Image - Right-click a message → Apps → Select Image, then /caption uses it
 
         I can help users look up world records, player statistics, historical data, Chronicle narratives, and statistics-explorer analytics from the FastSnakeStats database. Commands that take a date support optional historical date parameters to view past snapshots.
-        I can also caption images like esmBot: use /caption, or right-click a message and choose Select Image first.
+        I can also caption images and GIFs like esmBot: use /caption, or right-click a message and choose Select Image first.
         Portal mode has twice the fruit and each one you eat makes the head escape out of it's matching fruit, and spawns 2 additional fruit.
         Yin yang is the mode with 2 snakes, where one is just an inverted snake. In twin mode, the snake switches places between head and tail only when it eats an apple.
         Google snake has 3 speeds which are Slow, Normal and Fast. Google Snake has 3 sizes, Small, normal and large.

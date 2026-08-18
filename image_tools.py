@@ -23,6 +23,13 @@ IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 _selected_images: Dict[int, Dict] = {}
 
 
+def _prefer_original_media_url(url: str) -> str:
+    """Discord's media proxy often serves a still WebP instead of an animated GIF."""
+    if not url:
+        return url
+    return url.replace("://media.discordapp.net/", "://cdn.discordapp.com/")
+
+
 def _looks_like_image_url(url: str) -> bool:
     if not url:
         return False
@@ -44,26 +51,32 @@ def _media_from_attachment(att: discord.Attachment) -> Optional[Dict]:
     ct = (att.content_type or "").lower()
     name = (att.filename or "").lower()
     if ct.startswith("image/") or any(name.endswith(ext) for ext in IMAGE_EXTS):
+        # Prefer the original CDN URL so animated GIFs are not flattened
         return {
-            "url": att.proxy_url or att.url,
+            "url": _prefer_original_media_url(att.url or att.proxy_url),
             "spoiler": bool(att.is_spoiler()),
         }
     return None
 
 
 def _media_from_embed(embed: discord.Embed) -> Optional[Dict]:
-    if embed.image and embed.image.url:
-        return {"url": embed.image.url, "spoiler": False}
-    if embed.thumbnail and embed.thumbnail.url:
-        return {"url": embed.thumbnail.url, "spoiler": False}
-    if embed.video and embed.video.url and embed.url:
-        provider = (embed.provider.url if embed.provider else "") or ""
-        if any(p in provider for p in ("tenor.com", "tenor.co", "giphy.com")):
-            return {"url": embed.url, "spoiler": False}
-        if _looks_like_image_url(embed.video.url):
-            return {"url": embed.video.url, "spoiler": False}
-    if embed.url and _looks_like_image_url(embed.url):
+    provider = ((embed.provider.url if embed.provider else "") or "").lower()
+    is_gif_host = any(p in provider for p in ("tenor.com", "tenor.co", "giphy.com"))
+    # Prefer the gif page/url over Discord's MP4 preview
+    if is_gif_host and embed.url:
         return {"url": embed.url, "spoiler": False}
+    if embed.image and embed.image.url:
+        return {"url": _prefer_original_media_url(embed.image.url), "spoiler": False}
+    if embed.thumbnail and embed.thumbnail.url:
+        return {"url": _prefer_original_media_url(embed.thumbnail.url), "spoiler": False}
+    if embed.video and embed.video.url:
+        video_url = embed.video.url
+        if is_gif_host or _looks_like_image_url(video_url) or video_url.lower().endswith(".mp4"):
+            if embed.url and (is_gif_host or "tenor.com" in embed.url or "giphy.com" in embed.url):
+                return {"url": embed.url, "spoiler": False}
+            return {"url": _prefer_original_media_url(video_url), "spoiler": False}
+    if embed.url and _looks_like_image_url(embed.url):
+        return {"url": _prefer_original_media_url(embed.url), "spoiler": False}
     return None
 
 
@@ -86,18 +99,36 @@ def extract_media_from_message(message: discord.Message) -> List[Dict]:
     return found
 
 
-async def resolve_tenor_view_url(url: str) -> Optional[str]:
-    """Best-effort: turn a tenor.com/view/... page into a direct media gif."""
+async def resolve_direct_media_url(url: str) -> str:
+    """Turn Tenor/Giphy pages and MP4 previews into a direct GIF when possible."""
+    if not url:
+        return url
+    url = _prefer_original_media_url(url)
     try:
         parsed = urlparse(url)
     except ValueError:
-        return None
+        return url
     host = (parsed.hostname or "").lower()
+    path = parsed.path
+
+    # Tenor CDN mp4/webp → gif
+    if "tenor.com" in host and host.startswith("media"):
+        lower_path = path.lower()
+        for ext in (".mp4", ".webm", ".webp"):
+            if lower_path.endswith(ext):
+                return url[: len(url) - len(ext)] + ".gif"
+        return url
+
+    # Giphy page → i.giphy.com/<id>.gif
+    if "giphy.com" in host and "/gifs/" in path:
+        slug = path.rstrip("/").split("/")[-1]
+        gif_id = slug.split("-")[-1] if slug else ""
+        if gif_id:
+            return f"https://i.giphy.com/{gif_id}.gif"
+
     if "tenor.com" not in host:
         return url
-    if "/view/" not in parsed.path:
-        return url
-    if host.startswith("media"):
+    if "/view/" not in path:
         return url
     try:
         async with aiohttp.ClientSession() as session:
@@ -113,8 +144,7 @@ async def resolve_tenor_view_url(url: str) -> Optional[str]:
     return url
 
 
-async def download_image(url: str) -> bytes:
-    url = await resolve_tenor_view_url(url) or url
+async def _http_get_bytes(url: str) -> bytes:
     headers = {"User-Agent": "PuddingBot/1.0"}
     async with aiohttp.ClientSession(headers=headers) as session:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
@@ -127,6 +157,25 @@ async def download_image(url: str) -> bytes:
             if len(data) > MAX_DOWNLOAD_BYTES:
                 raise ValueError("Image is too large to download")
             return data
+
+
+async def download_image(url: str) -> bytes:
+    url = await resolve_direct_media_url(url)
+    data = await _http_get_bytes(url)
+    # If Discord/Tenor served an MP4 preview, try a .gif sibling once
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        if url.lower().endswith(".mp4"):
+            gif_url = url[:-4] + ".gif"
+            try:
+                return await _http_get_bytes(gif_url)
+            except Exception:
+                raise ValueError(
+                    "That looks like a video preview, not a GIF. Attach the GIF file or a .gif link."
+                )
+        raise ValueError(
+            "That looks like a video preview, not a GIF. Attach the GIF file or a .gif link."
+        )
+    return data
 
 
 class ImageTools(commands.Cog):
@@ -163,7 +212,7 @@ class ImageTools(commands.Cog):
             chosen = media_list[0]
         if not chosen:
             await interaction.followup.send(
-                "Couldn't find an image in that message.",
+                "Couldn't find an image or GIF in that message.",
                 ephemeral=True,
             )
             return
@@ -173,7 +222,7 @@ class ImageTools(commands.Cog):
             "spoiler": bool(chosen.get("spoiler")),
         }
         await interaction.followup.send(
-            "Image selected. Run `/caption` to caption it.",
+            "Image/GIF selected. Run `/caption` to caption it.",
             ephemeral=True,
         )
 
@@ -206,7 +255,7 @@ class ImageTools(commands.Cog):
         if image is not None:
             media = _media_from_attachment(image)
             if not media:
-                return None, "That attachment isn't an image/GIF."
+                return None, "That attachment isn't an image or GIF."
             return media, None
 
         if link:
@@ -224,16 +273,16 @@ class ImageTools(commands.Cog):
             return history, None
 
         tip = (
-            "No image found. Attach one, pass a link, right-click a message → "
-            "**Apps → Select Image**, or post an image in this channel first."
+            "No image or GIF found. Attach one, pass a link, right-click a message → "
+            "**Apps → Select Image**, or post one in this channel first."
         )
         return None, tip
 
-    @app_commands.command(name="caption", description="Adds a caption to an image")
+    @app_commands.command(name="caption", description="Adds a caption to an image or GIF")
     @app_commands.describe(
-        text="The text to put on the image",
-        image="An image/GIF attachment",
-        link="An image/GIF URL",
+        text="The text to put on the image or GIF",
+        image="An image or GIF attachment",
+        link="An image or GIF URL",
         spoiler="Attempt to send output as a spoiler",
         ephemeral="Attempt to send output as an ephemeral/temporary response",
     )
@@ -258,7 +307,7 @@ class ImageTools(commands.Cog):
 
         media, err = await self._resolve_media(interaction, image, link)
         if err or not media:
-            await interaction.followup.send(err or "No image found.", ephemeral=True)
+            await interaction.followup.send(err or "No image or GIF found.", ephemeral=True)
             return
 
         try:
@@ -270,7 +319,7 @@ class ImageTools(commands.Cog):
         except Exception as e:
             print(f"Caption failed: {e}")
             await interaction.followup.send(
-                "Failed to caption that image. Try another image or format.",
+                "Failed to caption that image or GIF. Try another file or format.",
                 ephemeral=True,
             )
             return
@@ -281,7 +330,7 @@ class ImageTools(commands.Cog):
             msg = await interaction.followup.send(file=file, wait=True)
         except discord.HTTPException as e:
             await interaction.followup.send(
-                f"Couldn't upload the captioned image: {e}",
+                f"Couldn't upload the captioned image/GIF: {e}",
                 ephemeral=True,
             )
             return
@@ -289,7 +338,7 @@ class ImageTools(commands.Cog):
         if msg and msg.attachments:
             att = msg.attachments[0]
             _selected_images[interaction.user.id] = {
-                "url": att.proxy_url or att.url,
+                "url": _prefer_original_media_url(att.url or att.proxy_url),
                 "spoiler": bool(spoiler or media.get("spoiler")),
             }
 
