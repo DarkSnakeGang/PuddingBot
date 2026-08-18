@@ -10,6 +10,7 @@ from datetime import datetime, date, time, timedelta, timezone
 
 from github_cache_fetcher import github_cache_fetcher
 import data_management as dm
+import wr_watch
 
 # google-snake channel (snake emoji) — https://discord.com/channels/723093146954760222/723093815786864661
 GOOGLE_SNAKE_CHANNEL_ID = int(os.getenv("GOOGLE_SNAKE_CHANNEL_ID", "723093815786864661"))
@@ -31,15 +32,23 @@ LIST_MODE_GROUPS = (MASTERY_MODE_HS_ONLY,)
 
 class FastSnakeStats(commands.Cog):
     """FastSnakeStats Discord bot integration"""
+
+    watch_group = app_commands.Group(
+        name="watch",
+        description="Get notified when a category world record changes",
+    )
     
     def __init__(self, bot):
         self.bot = bot
         self.cache_data = {}
         self.last_cache_update = None
         self.monthly_oldest_report_task.start()
+        self.wr_watch_task.start()
 
     def cog_unload(self):
         self.monthly_oldest_report_task.cancel()
+        if self.wr_watch_task.is_running():
+            self.wr_watch_task.cancel()
     
     async def get_record_data(self, apple_amount: str, speed: str, size: str, gamemode: str, date: Optional[str] = None, run_mode: str = "25 Apples") -> Optional[Dict]:
         """Get record data for specific settings"""
@@ -741,6 +750,81 @@ class FastSnakeStats(commands.Cog):
     @monthly_oldest_report_task.before_loop
     async def before_monthly_oldest_report_task(self):
         await self.bot.wait_until_ready()
+
+    def _watch_holder_line(self, runs: Optional[List]) -> str:
+        if not runs:
+            return "unheld"
+        names = [dm.get_player_name(run) for run in runs]
+        time_str = dm.get_run_time(runs[0])
+        parts = (runs[0].get("date") and str(runs[0].get("date"))) or ""
+        label = ", ".join(n for n in names if n)
+        return f"{label or 'Unknown'} · {time_str}" + (f" ({parts})" if parts else "")
+
+    async def _check_wr_watches(self) -> None:
+        state = wr_watch.load_state()
+        watches = state.get("watches") or []
+        if not watches:
+            return
+        records = await github_cache_fetcher.fetch_current_world_records()
+        if not records:
+            print("[wr-watch] No records available; skipping probe")
+            return
+
+        flips: Dict[str, Dict] = {}
+        for watch in watches:
+            category = watch.get("category") or ""
+            runs = records.get(category) or []
+            fingerprint = wr_watch.fingerprint_runs(runs)
+            previous = watch.get("fingerprint") or ""
+            if previous == fingerprint:
+                continue
+            old_player = watch.get("player") or "unheld"
+            old_time = watch.get("time") or "—"
+            new_line = self._watch_holder_line(runs)
+            wr_watch.update_watch_snapshot(
+                watch.get("id") or "",
+                fingerprint,
+                dm.get_player_name(runs[0]) if runs else "unheld",
+                dm.get_run_time(runs[0]) if runs else "—",
+            )
+            flips.setdefault(category, {"old": f"{old_player} · {old_time}", "new": new_line, "pings": {}})
+            channel_id = int(watch.get("channel_id") or 0)
+            user_id = int(watch.get("user_id") or 0)
+            flips[category]["pings"].setdefault(channel_id, set()).add(user_id)
+
+        for category, payload in flips.items():
+            line = (
+                f"{self._format_category_line(category)} was updated!\n"
+                f"was: {payload['old']}\n"
+                f"now: {payload['new']}"
+            )
+            for channel_id, user_ids in payload["pings"].items():
+                mentions = " ".join(f"<@{uid}>" for uid in sorted(user_ids))
+                message = f"{mentions}\n{line}" if mentions else line
+                channel = self.bot.get_channel(channel_id)
+                if channel is None:
+                    try:
+                        channel = await self.bot.fetch_channel(channel_id)
+                    except Exception as error:
+                        print(f"[wr-watch] Could not fetch channel {channel_id}: {error}")
+                        continue
+                try:
+                    await channel.send(message)
+                except Exception as error:
+                    print(f"[wr-watch] Failed to announce {category}: {error}")
+
+    @tasks.loop(minutes=30)
+    async def wr_watch_task(self) -> None:
+        try:
+            print("[wr-watch] Probing watched categories…")
+            await self._check_wr_watches()
+        except Exception as error:
+            print(f"[wr-watch] Probe failed: {error}")
+
+    @wr_watch_task.before_loop
+    async def before_wr_watch_task(self) -> None:
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(120)
     
     def _calculate_improvement(self, old_run: dict, new_run: dict) -> Optional[float]:
         """Calculate time improvement in milliseconds"""
@@ -833,6 +917,12 @@ class FastSnakeStats(commands.Cog):
             needle = current.lower()
             options = [option for option in options if needle in option.lower()]
         return [app_commands.Choice(name=option, value=option) for option in options[:25]]
+
+    async def player_name_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        names = await github_cache_fetcher.search_player_names(current, limit=25)
+        return [app_commands.Choice(name=name, value=name) for name in names]
 
     async def record_game_mode_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -2740,6 +2830,7 @@ class FastSnakeStats(commands.Cog):
     )
     @app_commands.autocomplete(
         date=player_date_autocomplete,
+        player_name=player_name_autocomplete,
         game_mode=mastery_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
@@ -3553,6 +3644,7 @@ class FastSnakeStats(commands.Cog):
         size="Optional size filter",
     )
     @app_commands.autocomplete(
+        player_name=player_name_autocomplete,
         game_mode=mastery_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
@@ -4095,6 +4187,7 @@ class FastSnakeStats(commands.Cog):
         app_commands.Choice(name="Debuts", value="debuts"),
     ])
     @app_commands.autocomplete(
+        player=player_name_autocomplete,
         game_mode=record_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
@@ -4222,6 +4315,335 @@ class FastSnakeStats(commands.Cog):
             await interaction.followup.send(
                 "❌ An error occurred while fetching Chronicle data."
             )
+
+    def _player_hold_map(self, world_records: Dict, player_name: str) -> Dict[str, List]:
+        needle = (player_name or "").lower().strip()
+        held: Dict[str, List] = {}
+        if not needle:
+            return held
+        for key, runs in (world_records or {}).items():
+            mine = [
+                run for run in (runs or [])
+                if dm.get_player_name(run).lower() == needle
+            ]
+            if mine:
+                held[key] = mine
+        return held
+
+    def create_compare_embed(self, data: Dict, page: int = 0) -> discord.Embed:
+        name_a = data["name_a"]
+        name_b = data["name_b"]
+        only_a = data["only_a"]
+        only_b = data["only_b"]
+        shared = data["shared"]
+        rows = data["rows"]
+        per_page = 8
+        total_pages = max(1, (len(rows) + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        page_rows = rows[page * per_page: page * per_page + per_page]
+
+        embed = discord.Embed(
+            title=f"Compare — {name_a} vs {name_b}",
+            description=(
+                f"**{name_a}:** {data['count_a']} WRs ({data['pct_a']:.2f}%)\n"
+                f"**{name_b}:** {data['count_b']} WRs ({data['pct_b']:.2f}%)\n"
+                f"Unique {name_a}: **{len(only_a)}** · Unique {name_b}: **{len(only_b)}** · "
+                f"Shared/tied: **{len(shared)}**"
+            ),
+            color=0x5865f2,
+            timestamp=datetime.now(),
+        )
+        if page_rows:
+            lines = []
+            for row in page_rows:
+                cat = self._format_category_line(row["category"])
+                if row["side"] == "a":
+                    lines.append(f"**{name_a} only** — {cat}")
+                elif row["side"] == "b":
+                    lines.append(f"**{name_b} only** — {cat}")
+                else:
+                    lines.append(f"**Tied** — {cat}")
+            embed.add_field(name="Boards", value="\n".join(lines), inline=False)
+        else:
+            embed.add_field(name="Boards", value="No overlapping or unique boards.", inline=False)
+        embed.set_footer(
+            text=f"Data from FastSnakeStats • {data['date']} • Page {page + 1}/{total_pages}"
+        )
+        return embed
+
+    @app_commands.command(
+        name="compare",
+        description="Compare two players' current (or historical) WR holds",
+    )
+    @app_commands.describe(
+        player_a="First player",
+        player_b="Second player",
+        date="Historical date - optional",
+    )
+    @app_commands.autocomplete(
+        player_a=player_name_autocomplete,
+        player_b=player_name_autocomplete,
+        date=player_date_autocomplete,
+    )
+    async def compare_command(
+        self,
+        interaction: discord.Interaction,
+        player_a: str,
+        player_b: str,
+        date: Optional[str] = None,
+    ):
+        await interaction.response.defer()
+        try:
+            if player_a.strip().lower() == player_b.strip().lower():
+                await interaction.followup.send("Pick two different players to compare.")
+                return
+            if date and not await github_cache_fetcher.is_date_available(date):
+                await interaction.followup.send(
+                    f"❌ No data available for date: {date}. Use `/available-dates`."
+                )
+                return
+
+            peak_a = await github_cache_fetcher.get_player_peak_stats(player_a)
+            peak_b = await github_cache_fetcher.get_player_peak_stats(player_b)
+            name_a = (peak_a or {}).get("name") or player_a
+            name_b = (peak_b or {}).get("name") or player_b
+
+            if date:
+                world_records = await github_cache_fetcher.fetch_world_records_for_date(date)
+            else:
+                world_records = await github_cache_fetcher.fetch_current_world_records()
+            if not world_records:
+                await interaction.followup.send("❌ Could not load world records.")
+                return
+
+            held_a = self._player_hold_map(world_records, name_a)
+            held_b = self._player_hold_map(world_records, name_b)
+            keys_a = set(held_a)
+            keys_b = set(held_b)
+            only_a = sorted(keys_a - keys_b)
+            only_b = sorted(keys_b - keys_a)
+            shared = sorted(keys_a & keys_b)
+            total = sum(1 for runs in world_records.values() if runs)
+            count_a = len(keys_a)
+            count_b = len(keys_b)
+            pct_a = round((count_a / total) * 100, 2) if total else 0.0
+            pct_b = round((count_b / total) * 100, 2) if total else 0.0
+
+            rows = (
+                [{"side": "a", "category": k} for k in only_a]
+                + [{"side": "b", "category": k} for k in only_b]
+                + [{"side": "shared", "category": k} for k in shared]
+            )
+            snapshot = date or await github_cache_fetcher.get_most_recent_date() or "latest"
+            data = {
+                "name_a": name_a,
+                "name_b": name_b,
+                "count_a": count_a,
+                "count_b": count_b,
+                "pct_a": pct_a,
+                "pct_b": pct_b,
+                "only_a": only_a,
+                "only_b": only_b,
+                "shared": shared,
+                "rows": rows,
+                "date": snapshot,
+            }
+            embed = self.create_compare_embed(data, page=0)
+            total_pages = max(1, (len(rows) + 7) // 8)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_compare_embed(data, page),
+                )
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in compare command: {e}")
+            await interaction.followup.send("❌ An error occurred while comparing players.")
+
+    HELP_PAGES = [
+        (
+            "Records & time travel",
+            "- `/record` — WR for a category (optional date)\n"
+            "- `/leaderboards` — full WR table for count/speed/size\n"
+            "- `/available-dates` — dates with FastSnakeStats snapshots\n"
+            "- `/watch add` — ping you when that category's WR changes\n"
+            "- `/watch list` / `/watch remove` / `/watch clear`",
+        ),
+        (
+            "Players",
+            "- `/player` — profile, holds, or Mastery boards\n"
+            "- `/compare` — unique vs shared WR holds between two players\n"
+            "- `/career` — career WR-days leaderboard\n"
+            "- `/mastery` — All Apples challenge leaderboard or one player\n"
+            "- `/chronicle` — era newspaper, empire arcs, board wars, debuts",
+        ),
+        (
+            "Statistics explorer",
+            "- `/stats` — top holders by count / percentage\n"
+            "- `/report` — weekly WR changes\n"
+            "- `/monthly` — oldest-records update\n"
+            "- `/random` — random valid challenge + current WR\n"
+            "- `/progression` `/longevity` `/improving` `/contested`\n"
+            "- `/popularity` `/stale` `/legends` `/unicorns` `/unheld` `/activity`",
+        ),
+        (
+            "Tools",
+            "- `/caption` — ESMBot-style caption on an image or GIF\n"
+            "- Select Image — right-click a message → Apps → Select Image\n"
+            "- `/wallall` — solve a small-board Wall All pattern (90-cell 1/2 grid)\n"
+            "- `pattern <grid>` — same solver as a text command\n"
+            "- `/help` — this command list",
+        ),
+    ]
+
+    def create_help_embed(self, page: int = 0) -> discord.Embed:
+        total = len(self.HELP_PAGES)
+        page = max(0, min(page, total - 1))
+        title, body = self.HELP_PAGES[page]
+        embed = discord.Embed(
+            title="PuddingBot help",
+            description=f"**{title}**\n{body}",
+            color=0xf5c518,
+            timestamp=datetime.now(),
+        )
+        embed.set_footer(text=f"Page {page + 1}/{total}")
+        return embed
+
+    @app_commands.command(name="help", description="List PuddingBot slash commands")
+    async def help_command(self, interaction: discord.Interaction):
+        embed = self.create_help_embed(0)
+        view = ListPaginationView(
+            interaction.user.id,
+            len(self.HELP_PAGES),
+            self.create_help_embed,
+        )
+        await interaction.response.send_message(embed=embed, view=view)
+
+    async def watch_remove_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        watches = wr_watch.list_user_watches(interaction.user.id)
+        needle = (current or "").lower()
+        choices: List[app_commands.Choice[str]] = []
+        for watch in watches:
+            category = watch.get("category") or ""
+            if not category:
+                continue
+            label = dm.format_category_key(category, with_icons=False)
+            if needle and needle not in category.lower() and needle not in label.lower():
+                continue
+            choices.append(app_commands.Choice(name=label[:100], value=category))
+            if len(choices) >= 25:
+                break
+        return choices
+
+    @watch_group.command(name="add", description="Watch a category for WR changes")
+    @app_commands.describe(
+        game_mode="Game mode",
+        apple_amount="Apple count",
+        speed="Speed",
+        size="Size",
+        run_mode="Run mode",
+    )
+    @app_commands.autocomplete(
+        game_mode=record_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+        run_mode=record_run_mode_autocomplete,
+    )
+    async def watch_add_command(
+        self,
+        interaction: discord.Interaction,
+        game_mode: str,
+        apple_amount: str,
+        speed: str,
+        size: str,
+        run_mode: str,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            if not dm.is_valid_category(apple_amount, speed, size, game_mode, run_mode):
+                await interaction.followup.send("That settings combination isn't a valid board.", ephemeral=True)
+                return
+            if interaction.channel is None:
+                await interaction.followup.send("Run this in a channel I can post in.", ephemeral=True)
+                return
+            category = dm.get_settings_key(apple_amount, speed, size, game_mode, run_mode)
+            records = await github_cache_fetcher.fetch_current_world_records()
+            runs = (records or {}).get(category) or []
+            fingerprint = wr_watch.fingerprint_runs(runs)
+            player = dm.get_player_name(runs[0]) if runs else "unheld"
+            time_str = dm.get_run_time(runs[0]) if runs else "—"
+            entry, err = wr_watch.add_watch(
+                user_id=interaction.user.id,
+                channel_id=interaction.channel.id,
+                guild_id=interaction.guild.id if interaction.guild else None,
+                category=category,
+                fingerprint=fingerprint,
+                player=player,
+                time_str=time_str,
+            )
+            if err:
+                await interaction.followup.send(err, ephemeral=True)
+                return
+            current = self._watch_holder_line(runs)
+            await interaction.followup.send(
+                f"Watching {self._format_category_line(category)} in this channel.\n"
+                f"Current: {current}\n"
+                f"I'll ping you here when the WR changes (checked about every 30 minutes).",
+                ephemeral=True,
+            )
+        except Exception as e:
+            print(f"Error in /watch add: {e}")
+            await interaction.followup.send("Failed to add that watch.", ephemeral=True)
+
+    @watch_group.command(name="list", description="List your WR watches")
+    async def watch_list_command(self, interaction: discord.Interaction):
+        watches = wr_watch.list_user_watches(interaction.user.id)
+        if not watches:
+            await interaction.response.send_message(
+                "You have no watches. Use `/watch add` on a category.",
+                ephemeral=True,
+            )
+            return
+        lines = []
+        for watch in watches:
+            cat = self._format_category_line(watch.get("category") or "")
+            holder = watch.get("player") or "unheld"
+            time_str = watch.get("time") or "—"
+            lines.append(f"• {cat} — {holder} · {time_str}")
+        text = "\n".join(lines)
+        if len(text) > 1900:
+            text = text[:1900] + "\n…"
+        await interaction.response.send_message(f"**Your watches ({len(watches)})**\n{text}", ephemeral=True)
+
+    @watch_group.command(name="remove", description="Stop watching a category")
+    @app_commands.describe(category="Category key from /watch list autocomplete")
+    @app_commands.autocomplete(category=watch_remove_autocomplete)
+    async def watch_remove_command(self, interaction: discord.Interaction, category: str):
+        removed = wr_watch.remove_watch(interaction.user.id, category)
+        if not removed:
+            await interaction.response.send_message(
+                "You weren't watching that category.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"Stopped watching {self._format_category_line(category)}.",
+            ephemeral=True,
+        )
+
+    @watch_group.command(name="clear", description="Remove all of your WR watches")
+    async def watch_clear_command(self, interaction: discord.Interaction):
+        removed = wr_watch.clear_user_watches(interaction.user.id)
+        await interaction.response.send_message(
+            f"Cleared **{removed}** watch(es)." if removed else "You had no watches.",
+            ephemeral=True,
+        )
 
     @app_commands.command(
         name="activity",

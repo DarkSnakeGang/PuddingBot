@@ -188,6 +188,8 @@ async def _apply_repo_update(set_status: StatusCallback) -> tuple[bool, bool, st
             "emoji_map.json",
             "-e",
             "repo_watch_state.json",
+            "-e",
+            "wr_watch_state.json",
         ],
         timeout=60,
     )

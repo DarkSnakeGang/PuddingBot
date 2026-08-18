@@ -591,18 +591,19 @@ def replace_char_at_index(original_string, index, new_char):
     new_string = original_string[:index] + new_char + original_string[index + 1:]
     return new_string    
 
+def normalize_pattern_string(pattern_string: str) -> str:
+    """Keep only 1 (empty) and 2 (wall) cells."""
+    return "".join(ch for ch in (pattern_string or "") if ch in "12")
+
+
 def check_pattern(pattern_string):
-    ''' (string) -> None
+    ''' (string) -> str
     gets pattern from string, convert it to the array thing, tries to solves and returns the solution if it found one
     '''
-    valid_characters = {'1', '2'}
+    pattern_string = normalize_pattern_string(pattern_string)
 
     if(len(pattern_string) != 90):
         return "I can solve only Small Board patterns, so I'm expecting exactly 90 characters"
-    else:
-        for char in pattern_string:
-            if char not in valid_characters:
-                return "Invalid characters in the pattern"
     if(len(pattern_string.replace("1", "")) < 12):
         return "Pattern has under 12 walls, refusing to calculate since it may result in a crash"
     pattern = Pattern(10, 9, wmap=stringToBoardArray(pattern_string))

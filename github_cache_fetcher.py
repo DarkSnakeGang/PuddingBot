@@ -398,6 +398,43 @@ class GitHubCacheFetcher:
             print(f'Error fetching player stats metadata: {error}')
             return self._player_stats_cache
 
+    async def search_player_names(self, query: str, limit: int = 25) -> List[str]:
+        """Player names from player-stats.json (startswith, then contains)."""
+        metadata = await self.fetch_player_stats_metadata()
+        if not metadata or not metadata.get('players'):
+            return []
+
+        players = [p for p in metadata['players'] if p.get('name')]
+        needle = (query or '').lower().strip()
+        if needle:
+            players = [
+                p for p in players if needle in (p.get('name') or '').lower()
+            ]
+            players.sort(
+                key=lambda p: (
+                    0 if (p.get('name') or '').lower().startswith(needle) else 1,
+                    -(p.get('totalRecords') or 0),
+                    (p.get('name') or '').lower(),
+                )
+            )
+        else:
+            players.sort(
+                key=lambda p: (-(p.get('totalRecords') or 0), (p.get('name') or '').lower())
+            )
+
+        names: List[str] = []
+        seen = set()
+        for player in players:
+            name = player.get('name') or ''
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            names.append(name)
+            if len(names) >= limit:
+                break
+        return names
+
     async def get_player_peak_stats(self, player_name: str) -> Optional[Dict]:
         """Look up peak records / peak percentage for a player (case-insensitive)."""
         metadata = await self.fetch_player_stats_metadata()

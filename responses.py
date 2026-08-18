@@ -164,8 +164,12 @@ def clear_context():
         - /legends - Mythic/Lottery holds (show=All|Legends|Unicorns; optional category filters; High score modes only)
         - /unheld - Never-held categories, easiest first (optional difficulty tier + category filters; High score modes only; Timed = non-HS)
         - /activity - Yearly new-WR activity (day the #1 actually changed)
+        - /watch - Watch a category and get pinged when its WR changes (add / list / remove / clear)
+        - /compare - Compare two players' WR holds (optional date)
+        - /help - List PuddingBot slash commands
         - /caption - Add an ESMBot-style caption bar to an image or GIF (text; optional attachment/link)
         - Select Image - Right-click a message → Apps → Select Image, then /caption uses it
+        - /wallall - Solve a small-board Wall All pattern (90-cell 1/2 grid; also `pattern …`)
 
         I can help users look up world records, player statistics, historical data, Chronicle narratives, and statistics-explorer analytics from the FastSnakeStats database. Commands that take a date support optional historical date parameters to view past snapshots.
         I can also caption images and GIFs like esmBot: use /caption, or right-click a message and choose Select Image first.
@@ -214,6 +218,14 @@ def get_response(user_input: str, user="Nobody", status_notify=None) -> str:
     if 'i completely agree' == lowered[:len('I completely agree')]:
         return 'https://klipy.com/gifs/i-completely-agree-i-agree'
 
+    if lowered == "pattern" or lowered.startswith("pattern "):
+        rest = user_input.split(None, 1)
+        grid = rest[1] if len(rest) > 1 else ""
+        cleaned = wall.normalize_pattern_string(grid)
+        if not cleaned:
+            return "Use `/wallall` or `pattern` plus a 90-cell small-board grid (`1` empty, `2` wall)."
+        return wall.check_pattern(cleaned)
+
     if "how" in lowered:
         if "timer" in lowered:
             return "<#968893937630736504>"
@@ -223,9 +235,6 @@ def get_response(user_input: str, user="Nobody", status_notify=None) -> str:
             return "So far we know of exactly 235,355,155 wall patterns in small board."
         if "mods" in lowered:
             return "https://googlesnakemods.com"
-
-    if "pattern" == lowered[:7]:
-        return wall.check_pattern(lowered[-90:])
 
     if PuddingBot in lowered:
         print(f"[BOT PINGED] User {user} sent: {user_input}")

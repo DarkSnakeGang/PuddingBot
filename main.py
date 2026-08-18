@@ -414,7 +414,7 @@ async def purge_non_poi_messages(channel) -> None:
 
 async def load_extensions():
     """Load all cogs"""
-    for extension in ('admin', 'fastsnakestats', 'image_tools', 'repo_watcher'):
+    for extension in ('admin', 'fastsnakestats', 'image_tools', 'repo_watcher', 'wall_commands'):
         try:
             await bot.load_extension(extension)
             print(f"Loaded {extension} cog successfully")
