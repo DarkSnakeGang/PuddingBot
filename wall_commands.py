@@ -21,10 +21,10 @@ class WallAll(commands.Cog):
 
     @app_commands.command(
         name="wallall",
-        description="Solve a small-board Wall All pattern (90-cell 1/2 grid)",
+        description="Solve a small-board Wall All pattern (90-cell 0/1 or 1/2 grid)",
     )
     @app_commands.describe(
-        grid="10×9 row-major grid: 1 = empty, 2 = wall (90 characters). Spaces/newlines ignored.",
+        grid="10×9 row-major: 0/1 or 1/2 (90 cells). Walls vs empty are inferred. Spaces/newlines ignored.",
     )
     async def wallall_command(
         self, interaction: discord.Interaction, grid: app_commands.Range[str, 1, 600]
@@ -32,7 +32,7 @@ class WallAll(commands.Cog):
         cleaned = wall.normalize_pattern_string(grid)
         if len(cleaned) != 90:
             await interaction.response.send_message(
-                f"Small board only: send exactly 90 cells of `1` (empty) and `2` (wall). "
+                f"Small board only: send exactly 90 cells of `0`/`1` or `1`/`2`. "
                 f"Got **{len(cleaned)}** after stripping other characters.",
                 ephemeral=True,
             )

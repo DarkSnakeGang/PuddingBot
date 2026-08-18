@@ -591,20 +591,62 @@ def replace_char_at_index(original_string, index, new_char):
     new_string = original_string[:index] + new_char + original_string[index + 1:]
     return new_string    
 
+MIN_WALLS = 12
+
+
 def normalize_pattern_string(pattern_string: str) -> str:
-    """Keep only 1 (empty) and 2 (wall) cells."""
-    return "".join(ch for ch in (pattern_string or "") if ch in "12")
+    """Keep only 0/1/2 cells (spaces, letters, and other glyphs are ignored)."""
+    return "".join(ch for ch in (pattern_string or "") if ch in "012")
+
+
+def canonicalize_pattern_string(pattern_string: str) -> str:
+    """Map 0/1 or 1/2 grids to solver form: 1 = empty, 2 = wall."""
+    cleaned = normalize_pattern_string(pattern_string)
+    if not cleaned:
+        return cleaned
+    return _map_to_empty_and_wall(cleaned)
+
+
+def _map_to_empty_and_wall(cleaned: str) -> str:
+    """Infer which digit is walls.
+
+    - `2` is always a wall (legacy 1=empty / 2=wall).
+    - For 0/1 only: pick the encoding with at least MIN_WALLS walls;
+      if both work, walls are the minority digit (typical Wall All).
+      On a 45/45 tie, treat 1 as wall (bitmap occupancy).
+    """
+    chars = set(cleaned)
+    if "2" in chars:
+        return "".join("2" if ch == "2" else "1" for ch in cleaned)
+
+    zeros = cleaned.count("0")
+    ones = cleaned.count("1")
+    if zeros == 0 or ones == 0:
+        return "".join("1" for _ in cleaned)
+
+    def as_walls(wall_char: str) -> str:
+        return "".join("2" if ch == wall_char else "1" for ch in cleaned)
+
+    zero_ok = zeros >= MIN_WALLS
+    one_ok = ones >= MIN_WALLS
+    if zero_ok and not one_ok:
+        return as_walls("0")
+    if one_ok and not zero_ok:
+        return as_walls("1")
+    if zeros != ones:
+        return as_walls("0" if zeros < ones else "1")
+    return as_walls("1")
 
 
 def check_pattern(pattern_string):
     ''' (string) -> str
     gets pattern from string, convert it to the array thing, tries to solves and returns the solution if it found one
     '''
-    pattern_string = normalize_pattern_string(pattern_string)
+    pattern_string = canonicalize_pattern_string(pattern_string)
 
     if(len(pattern_string) != 90):
         return "I can solve only Small Board patterns, so I'm expecting exactly 90 characters"
-    if(len(pattern_string.replace("1", "")) < 12):
+    if(len(pattern_string.replace("1", "")) < MIN_WALLS):
         return "Pattern has under 12 walls, refusing to calculate since it may result in a crash"
     pattern = Pattern(10, 9, wmap=stringToBoardArray(pattern_string))
     solution = pattern.solve()
