@@ -137,13 +137,201 @@ def _extract_animated_frames(img: Image.Image) -> Tuple[List[Image.Image], List[
     return frames, durations
 
 
-def _quantize_rgb(frame: Image.Image, palette_img: Optional[Image.Image] = None) -> Image.Image:
+def _flatten_rgb(frame: Image.Image) -> Image.Image:
     rgb = Image.new("RGB", frame.size, (255, 255, 255))
     rgba = frame.convert("RGBA")
     rgb.paste(rgba, mask=rgba.split()[-1])
-    if palette_img is not None:
-        return rgb.quantize(palette=palette_img, dither=Image.Dither.FLOYDSTEINBERG)
-    return rgb.quantize(colors=255, method=Image.Quantize.MEDIANCUT)
+    return rgb
+
+
+def _palette_image(colors: List[Tuple[int, int, int]]) -> Image.Image:
+    pal: List[int] = []
+    for color in colors[:256]:
+        pal.extend(color)
+    pal.extend([0, 0, 0] * (256 - len(colors[:256])))
+    image = Image.new("P", (1, 1))
+    image.putpalette(pal)
+    return image
+
+
+def _palette_with_black_white(used_colors: List[Tuple[int, int, int]]) -> Image.Image:
+    """Keep every used color; append black/white if there is room, else steal nearest."""
+    colors: List[Tuple[int, int, int]] = []
+    seen = set()
+    for color in used_colors:
+        if color in seen:
+            continue
+        seen.add(color)
+        colors.append(color)
+
+    def add_or_replace(target: Tuple[int, int, int]) -> None:
+        if target in seen:
+            return
+        if len(colors) < 256:
+            colors.append(target)
+            seen.add(target)
+            return
+        best_i = 0
+        best_d = 10**9
+        for i, color in enumerate(colors):
+            if color in ((0, 0, 0), (255, 255, 255)) and color != target:
+                continue
+            dist = sum((color[j] - target[j]) ** 2 for j in range(3))
+            if dist < best_d:
+                best_d = dist
+                best_i = i
+        seen.discard(colors[best_i])
+        colors[best_i] = target
+        seen.add(target)
+
+    add_or_replace((0, 0, 0))
+    add_or_replace((255, 255, 255))
+    return _palette_image(colors)
+
+
+def _remap_to_palette(rgb: Image.Image, pal_img: Image.Image) -> Image.Image:
+    """Map each pixel to an exact palette index; nearest-color if needed. No dither."""
+    raw = list(pal_img.getpalette() or [])
+    raw.extend([0] * (768 - len(raw)))
+    raw = raw[:768]
+    pal_colors = [tuple(raw[i : i + 3]) for i in range(0, 768, 3)]
+    index_of: dict = {}
+    unique_entries = []
+    for i, color in enumerate(pal_colors):
+        if color in index_of:
+            continue
+        index_of[color] = i
+        unique_entries.append((i, color))
+
+    color_to_index = {}
+    counted = rgb.getcolors(maxcolors=rgb.size[0] * rgb.size[1]) or []
+    for _, pixel in counted:
+        idx = index_of.get(pixel)
+        if idx is None:
+            best_i, best_d = unique_entries[0][0], 10**9
+            pr, pg, pb = pixel
+            for cand_i, (cr, cg, cb) in unique_entries:
+                dist = (pr - cr) ** 2 + (pg - cg) ** 2 + (pb - cb) ** 2
+                if dist < best_d:
+                    best_d = dist
+                    best_i = cand_i
+                    if dist == 0:
+                        break
+            idx = best_i
+        color_to_index[pixel] = idx
+
+    indices = [color_to_index[pixel] for pixel in rgb.getdata()]
+    out = Image.new("P", rgb.size)
+    out.putpalette(raw)
+    out.putdata(indices)
+    return out
+
+
+def _collect_gif_palette(img: Image.Image) -> Optional[Image.Image]:
+    """Exact RGB colors from a palette GIF (global + per-frame local palettes)."""
+    n_frames = getattr(img, "n_frames", 1) or 1
+    unique: List[Tuple[int, int, int]] = []
+    seen = set()
+    for index in range(n_frames):
+        img.seek(index)
+        if img.mode != "P":
+            img.seek(0)
+            return None
+        raw = img.getpalette() or []
+        used_indices = set(img.getdata())
+        for index_value in used_indices:
+            offset = index_value * 3
+            if offset + 2 >= len(raw):
+                continue
+            color = (raw[offset], raw[offset + 1], raw[offset + 2])
+            if color in seen:
+                continue
+            seen.add(color)
+            unique.append(color)
+            if len(unique) > 256:
+                img.seek(0)
+                return None
+    img.seek(0)
+    if not unique:
+        return None
+    return _palette_with_black_white(unique)
+
+
+def _adaptive_palette(frames: List[Image.Image]) -> Image.Image:
+    """Pick 256 colors from every frame (nearest thumbs, so original hues stay)."""
+    samples: List[Image.Image] = []
+    for frame in frames:
+        rgb = _flatten_rgb(frame)
+        if max(rgb.size) > 128:
+            rgb = rgb.copy()
+            rgb.thumbnail((128, 128), Image.Resampling.NEAREST)
+        samples.append(rgb)
+    width = max(sample.width for sample in samples)
+    height = sum(sample.height for sample in samples)
+    sheet = Image.new("RGB", (width, height), (255, 255, 255))
+    y = 0
+    for sample in samples:
+        sheet.paste(sample, (0, y))
+        y += sample.height
+    method = getattr(Image.Quantize, "MAXCOVERAGE", Image.Quantize.MEDIANCUT)
+    reduced = sheet.quantize(colors=254, method=method, dither=Image.Dither.NONE)
+    raw = list(reduced.getpalette() or [])
+    used = [tuple(raw[i : i + 3]) for i in range(0, min(len(raw), 762), 3)]
+    return _palette_with_black_white(used)
+
+
+def _frames_palette(
+    frames: List[Image.Image], source_palette: Optional[Image.Image]
+) -> Image.Image:
+    if source_palette is not None:
+        return source_palette
+    unique: List[Tuple[int, int, int]] = []
+    seen = set()
+    for frame in frames:
+        counted = _flatten_rgb(frame).getcolors(maxcolors=256)
+        if counted is None:
+            return _adaptive_palette(frames)
+        for _, color in counted:
+            if color in seen:
+                continue
+            seen.add(color)
+            unique.append(color)
+            if len(unique) > 256:
+                return _adaptive_palette(frames)
+    return _palette_with_black_white(unique)
+
+
+def _frame_palette(frame: Image.Image) -> Image.Image:
+    rgb = _flatten_rgb(frame)
+    counted = rgb.getcolors(maxcolors=256)
+    if counted is not None:
+        return _palette_with_black_white([color for _, color in counted])
+    return _adaptive_palette([frame])
+
+
+def _caption_bar_bw(bar: Image.Image) -> Image.Image:
+    """Drop antialiased gray text so caption colors don't steal GIF palette slots."""
+    luma = bar.convert("L")
+    return luma.point(lambda px: 0 if px < 160 else 255, mode="L").convert("RGB")
+
+
+def _body_to_p(frame: Image.Image, palette_img: Image.Image) -> Image.Image:
+    """Quantize the original frame only (never the caption bar)."""
+    return _remap_to_palette(_flatten_rgb(frame), palette_img)
+
+
+def _stack_paletted(bar_rgb: Image.Image, body_p: Image.Image) -> Image.Image:
+    if bar_rgb.width != body_p.width:
+        bar_rgb = bar_rgb.resize(
+            (body_p.width, max(1, int(bar_rgb.height * body_p.width / bar_rgb.width))),
+            Image.Resampling.NEAREST,
+        )
+    bar_p = _remap_to_palette(bar_rgb.convert("RGB"), body_p)
+    out = Image.new("P", (body_p.width, bar_p.height + body_p.height))
+    out.putpalette(body_p.getpalette() or [])
+    out.paste(bar_p, (0, 0))
+    out.paste(body_p, (0, bar_p.height))
+    return out
 
 
 def _scale_frames(frames: List[Image.Image], factor: float) -> List[Image.Image]:
@@ -153,15 +341,29 @@ def _scale_frames(frames: List[Image.Image], factor: float) -> List[Image.Image]
     for frame in frames:
         width = max(1, int(frame.width * factor))
         height = max(1, int(frame.height * factor))
-        scaled.append(frame.resize((width, height), Image.Resampling.LANCZOS))
+        scaled.append(frame.resize((width, height), Image.Resampling.BOX))
     return scaled
 
 
-def _save_gif(frames: List[Image.Image], durations: List[int], loop: int) -> bytes:
+def _save_gif(
+    frames: List[Image.Image],
+    durations: List[int],
+    loop: int,
+    caption_bar: Image.Image,
+    palette_img: Optional[Image.Image] = None,
+    force_global_palette: bool = False,
+) -> bytes:
     if not frames:
         raise ValueError("GIF has no frames")
-    palette = _quantize_rgb(frames[0])
-    paletted = [palette] + [_quantize_rgb(frame, palette) for frame in frames[1:]]
+    bar_bw = _caption_bar_bw(caption_bar)
+    if palette_img is not None or force_global_palette:
+        shared = _frames_palette(frames, palette_img)
+        paletted = [_stack_paletted(bar_bw, _body_to_p(frame, shared)) for frame in frames]
+    else:
+        paletted = [
+            _stack_paletted(bar_bw, _body_to_p(frame, _frame_palette(frame)))
+            for frame in frames
+        ]
     buf = io.BytesIO()
     paletted[0].save(
         buf,
@@ -187,17 +389,30 @@ def caption_image(image_bytes: bytes, caption: str) -> Tuple[bytes, str]:
 
     with Image.open(io.BytesIO(image_bytes)) as img:
         if _is_animated(img):
+            source_palette = _collect_gif_palette(img)
             raw_frames, durations = _extract_animated_frames(img)
             loop = int(img.info.get("loop", 0) or 0)
             bar = _build_caption_bar(raw_frames[0].width, caption)
-            composed = [_stack_caption(frame, bar) for frame in raw_frames]
 
-            data = _save_gif(composed, durations, loop)
+            data = _save_gif(raw_frames, durations, loop, bar, source_palette)
+            if len(data) > MAX_OUTPUT_BYTES:
+                data = _save_gif(
+                    raw_frames, durations, loop, bar, None, force_global_palette=True
+                )
             scale = 1.0
             while len(data) > MAX_OUTPUT_BYTES and scale > 0.35:
                 scale *= 0.75
-                smaller = _scale_frames(composed, scale)
-                data = _save_gif(smaller, durations, loop)
+                smaller = _scale_frames(raw_frames, scale)
+                smaller_bar = bar.resize(
+                    (
+                        smaller[0].width,
+                        max(1, int(bar.height * smaller[0].width / bar.width)),
+                    ),
+                    Image.Resampling.NEAREST,
+                )
+                data = _save_gif(
+                    smaller, durations, loop, smaller_bar, None, force_global_palette=True
+                )
             if len(data) > MAX_OUTPUT_BYTES:
                 raise ValueError("Captioned GIF is too large to upload to Discord")
             return data, "gif"
