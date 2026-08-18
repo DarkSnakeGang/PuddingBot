@@ -14,7 +14,7 @@ from discord.ext import commands, tasks
 
 # Community mods / tools channel
 REPO_WATCH_CHANNEL_ID = int(
-    os.getenv("REPO_WATCH_CHANNEL_ID", "728788277762457702")
+    os.getenv("REPO_WATCH_CHANNEL_ID", "823215962936967169")
 )
 
 REPO_WATCH_ENABLED = os.getenv("REPO_WATCH_ENABLED", "1").strip().lower() not in (
