@@ -10,7 +10,7 @@ from discord.ext import commands
 
 import wall
 
-SOLVE_TIMEOUT_SECONDS = 25
+SOLVE_TIMEOUT_SECONDS = 45
 
 
 class WallAll(commands.Cog):
@@ -21,7 +21,7 @@ class WallAll(commands.Cog):
 
     @app_commands.command(
         name="wallall",
-        description="Solve a small-board Wall All pattern (90-cell 0/1 or 1/2 grid)",
+        description="Solve a small-board Wall All Ham Cycle or Ham Path (90-cell 0/1 or 1/2 grid)",
     )
     @app_commands.describe(
         grid="10×9 row-major: 0/1 or 1/2 (90 cells). Walls vs empty are inferred. Spaces/newlines ignored.",
@@ -46,7 +46,7 @@ class WallAll(commands.Cog):
             )
         except asyncio.TimeoutError:
             await interaction.followup.send(
-                "Solve timed out after 25s. Try a different pattern (or one with more walls)."
+                "Solve timed out after 45s. Try a different pattern (or one with more walls)."
             )
             return
         except Exception as error:

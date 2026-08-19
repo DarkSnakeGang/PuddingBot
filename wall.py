@@ -4,6 +4,8 @@
 from random import randint as rand
 from copy import deepcopy as copy
 
+import hampath
+
 # order --> UP DOWN LEFT RIGHT
 piecedict = {
     "1001" : "╚",
@@ -20,6 +22,13 @@ piecedicttemp = { # unused, could be for step by step view of .solve()
     "1010" : "┘",
     "0011" : "─",
     "0110" : "┐"
+}
+# Single-connection cells (Ham Path endpoints)
+ENDPOINT_PIECES = {
+    "1000": "╨",
+    "0100": "╥",
+    "0010": "╡",
+    "0001": "╞",
 }
 
 ## PHASE 1 :  Let's generate some wall patterns
@@ -341,7 +350,8 @@ def render_compound(wmap,smap):
         s += "|"
         for i in range(lx):
             if wmap[j][i] == 3:
-                s += piecedict[strpiece(smap[j][i])]
+                key = strpiece(smap[j][i])
+                s += piecedict.get(key) or ENDPOINT_PIECES.get(key) or "."
             elif wmap[j][i] == 2:
                 s += "#"
             else:
@@ -638,31 +648,74 @@ def _map_to_empty_and_wall(cleaned: str) -> str:
     return as_walls("1")
 
 
+def _cycle_coloring_possible(grid) -> bool:
+    black = white = 0
+    for r, row in enumerate(grid):
+        for c, cell in enumerate(row):
+            if cell != 2:
+                if (r + c) & 1:
+                    black += 1
+                else:
+                    white += 1
+    return black == white
+
+
+def tour_to_snakemap(tour):
+    """Convert [(row, col), ...] into the 4-direction snakemap used by render_compound."""
+    smap = [[[0, 0, 0, 0] for _ in range(10)] for _ in range(9)]
+    for (r1, c1), (r2, c2) in zip(tour, tour[1:]):
+        if r2 == r1 - 1 and c2 == c1:
+            smap[r1][c1][0] = 1
+            smap[r2][c2][1] = 1
+        elif r2 == r1 + 1 and c2 == c1:
+            smap[r1][c1][1] = 1
+            smap[r2][c2][0] = 1
+        elif c2 == c1 - 1 and r2 == r1:
+            smap[r1][c1][2] = 1
+            smap[r2][c2][3] = 1
+        elif c2 == c1 + 1 and r2 == r1:
+            smap[r1][c1][3] = 1
+            smap[r2][c2][2] = 1
+    return smap
+
+
+def render_tour(grid, tour) -> str:
+    wmap = [row[:] for row in grid]
+    smap = tour_to_snakemap(tour)
+    for r, c in tour:
+        if wmap[r][c] != 2:
+            wmap[r][c] = 3
+    return render_compound(wmap, smap)
+
+
 def check_pattern(pattern_string):
     ''' (string) -> str
-    gets pattern from string, convert it to the array thing, tries to solves and returns the solution if it found one
+    Solve a small-board pattern: Ham Cycle first, then Ham Path (Wall Research).
     '''
     pattern_string = canonicalize_pattern_string(pattern_string)
 
     if(len(pattern_string) != 90):
         return "I can solve only Small Board patterns, so I'm expecting exactly 90 characters"
-    if(len(pattern_string.replace("1", "")) < MIN_WALLS):
-        return "Pattern has under 12 walls, refusing to calculate since it may result in a crash"
-    pattern = Pattern(10, 9, wmap=stringToBoardArray(pattern_string))
-    solution = pattern.solve()
-    if solution:
-        return "```\n" + str(solution) + "```"
-    
-    for i in range(90):
-        pattern = Pattern(10, 9, wmap=stringToBoardArray(replace_char_at_index(pattern_string, i, "2")))
+    grid = stringToBoardArray(pattern_string)
+    wall_count = pattern_string.count("2")
+
+    if wall_count >= MIN_WALLS and _cycle_coloring_possible(grid):
+        pattern = Pattern(10, 9, wmap=copy(grid), walls=wall_count)
         solution = pattern.solve()
         if solution:
-            final_solution = str(solution)
-            for j in range(10):
-                final_solution = replace_char_at_index(final_solution, j+1, str((j+1) % 10))
-                if j == 9:
-                    break
-                final_solution = replace_char_at_index(final_solution, (j+1)*13, str((j+1) % 10))
-            return f"""Found minus1 solution\n```\n{str(final_solution)}```\nMinus1 Position: Column {(i % 10) + 1} Row {(i // 10) + 1}""" 
+            return "Ham Cycle\n```\n" + str(solution) + "```"
 
-    return "No Ham Cycle"
+    if not hampath.coloring_allows_path(grid):
+        return "No Ham Cycle or Ham Path (coloring)"
+
+    tour = hampath.find_hamiltonian_path(grid)
+    if tour:
+        gap = hampath.path_end_gap(tour)
+        start_r, start_c = tour[0]
+        end_r, end_c = tour[-1]
+        return (
+            f"Ham Path (gap {gap})\n```\n{render_tour(grid, tour)}```\n"
+            f"Start: Column {start_c + 1} Row {start_r + 1} → "
+            f"End: Column {end_c + 1} Row {end_r + 1}"
+        )
+    return "No Ham Cycle or Ham Path"

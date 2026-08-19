@@ -169,7 +169,7 @@ def clear_context():
         - /help - List PuddingBot slash commands
         - /caption - Add an ESMBot-style caption bar to an image or GIF (text; optional attachment/link)
         - Select Image - Right-click a message → Apps → Select Image, then /caption uses it
-        - /wallall - Solve a small-board Wall All pattern (90-cell 0/1 or 1/2 grid; also `pattern …`)
+        - /wallall - Solve a small-board Wall All Ham Cycle or Ham Path (90-cell 0/1 or 1/2 grid; also `pattern …`)
 
         I can help users look up world records, player statistics, historical data, Chronicle narratives, and statistics-explorer analytics from the FastSnakeStats database. Commands that take a date support optional historical date parameters to view past snapshots.
         I can also caption images and GIFs like esmBot: use /caption, or right-click a message and choose Select Image first.
