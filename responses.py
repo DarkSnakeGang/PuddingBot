@@ -169,7 +169,7 @@ def clear_context():
         - /help - List PuddingBot slash commands
         - /caption - Add an ESMBot-style caption bar to an image or GIF (text; optional attachment/link)
         - Select Image - Right-click a message → Apps → Select Image, then /caption uses it
-        - /wallall - Solve a small-board Wall All Ham Cycle or Ham Path (90-cell 0/1 or 1/2 grid; also `pattern …`)
+        - /wallall - Solve a small-board Wall All Ham Cycle or Ham Path. Paste pudding copy (`pattern 12…`) or a 90-cell 0/1 or 1/2 grid
 
         I can help users look up world records, player statistics, historical data, Chronicle narratives, and statistics-explorer analytics from the FastSnakeStats database. Commands that take a date support optional historical date parameters to view past snapshots.
         I can also caption images and GIFs like esmBot: use /caption, or right-click a message and choose Select Image first.
@@ -218,12 +218,10 @@ def get_response(user_input: str, user="Nobody", status_notify=None) -> str:
     if 'i completely agree' == lowered[:len('I completely agree')]:
         return 'https://klipy.com/gifs/i-completely-agree-i-agree'
 
-    if lowered == "pattern" or lowered.startswith("pattern "):
-        rest = user_input.split(None, 1)
-        grid = rest[1] if len(rest) > 1 else ""
-        cleaned = wall.normalize_pattern_string(grid)
+    if wall.is_pattern_message(user_input):
+        cleaned = wall.parse_pattern_input(user_input)
         if not cleaned:
-            return "Use `/wallall` or `pattern` plus a 90-cell small-board grid (`0`/`1` or `1`/`2`; walls vs empty are inferred)."
+            return "Use `/wallall` or paste pudding copy (`pattern` plus a 90-cell 1/2 grid)."
         return wall.check_pattern(cleaned)
 
     if "how" in lowered:

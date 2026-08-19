@@ -1,4 +1,5 @@
 from typing import Final, Optional, List
+import io
 import os
 import random
 import re
@@ -10,6 +11,7 @@ from discord.ext import commands
 from responses import get_response, is_allowed_poi_message
 import data_management as dm
 import asyncio
+from wall import PatternResult
 
 # Load Token
 load_dotenv()
@@ -110,10 +112,19 @@ async def send_message(message: Message, user_message: str, user="Nobody") -> No
             asyncio.run_coroutine_threadsafe(target.send(text), loop)
 
         # Run sync AI / response logic off the event loop so status messages can send
-        response: str = await asyncio.to_thread(
+        response = await asyncio.to_thread(
             get_response, user_message, user, status_notify
         )
-        if response:
+        if isinstance(response, PatternResult):
+            print("[PuddingBot]: " + response.content)
+            if response.png:
+                await target.send(
+                    response.content,
+                    file=File(io.BytesIO(response.png), filename="wallall.png"),
+                )
+            elif response.content:
+                await target.send(response.content)
+        elif response:
             print("[PuddingBot]: " + response)
             await target.send(response)
     except Exception as e:

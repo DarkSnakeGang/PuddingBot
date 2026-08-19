@@ -1,10 +1,14 @@
 # Wall all calculator originally by ScienceCrafter
 # Tip: The primary and most useful function is check(amount,width,height)
 
+from dataclasses import dataclass
 from random import randint as rand
 from copy import deepcopy as copy
+from typing import Optional
+import re
 
 import hampath
+import wall_render
 
 # order --> UP DOWN LEFT RIGHT
 piecedict = {
@@ -30,6 +34,14 @@ ENDPOINT_PIECES = {
     "0010": "╡",
     "0001": "╞",
 }
+
+
+@dataclass
+class PatternResult:
+    """Solver reply for Discord: caption plus optional Board-tab PNG."""
+
+    content: str
+    png: Optional[bytes] = None
 
 ## PHASE 1 :  Let's generate some wall patterns
 
@@ -603,6 +615,29 @@ def replace_char_at_index(original_string, index, new_char):
 
 MIN_WALLS = 12
 
+_CODE_FENCE_RE = re.compile(r"^```(?:\w+)?\s*|\s*```$", re.DOTALL)
+_LEADING_MENTION_RE = re.compile(r"^<@!?\d+>\s*")
+_PATTERN_PREFIX_RE = re.compile(r"(?is)^\s*pattern\b")
+
+
+def unwrap_copied_pattern(raw: str) -> str:
+    """Strip quotes, code fences, and a leading mention from a pudding copy paste."""
+    text = (raw or "").strip()
+    text = _CODE_FENCE_RE.sub("", text).strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'`":
+        text = text[1:-1].strip()
+    return _LEADING_MENTION_RE.sub("", text).strip()
+
+
+def parse_pattern_input(raw: str) -> str:
+    """90-cell 0/1/2 string from pudding clipboard (`pattern 12…`) or a raw grid."""
+    return normalize_pattern_string(unwrap_copied_pattern(raw))
+
+
+def is_pattern_message(raw: str) -> bool:
+    """True for pudding copy (`pattern …`) after stripping quotes/fences."""
+    return bool(_PATTERN_PREFIX_RE.match(unwrap_copied_pattern(raw)))
+
 
 def normalize_pattern_string(pattern_string: str) -> str:
     """Keep only 0/1/2 cells (spaces, letters, and other glyphs are ignored)."""
@@ -618,27 +653,16 @@ def canonicalize_pattern_string(pattern_string: str) -> str:
 
 
 def _map_to_empty_and_wall(cleaned: str) -> str:
-    """Infer which digit is walls.
+    """The digit that appears fewer times is walls; the other is empty.
 
-    - `2` is always a wall (legacy 1=empty / 2=wall).
-    - For 0/1 only: walls are the minority digit (typical Wall All occupancy).
-      On a 45/45 tie, treat 1 as wall.
+    Solver form is always 1 = empty, 2 = wall. A single digit (or a count
+    tie) uses the higher digit as walls (so pudding `2` still wins a 45/45).
     """
-    chars = set(cleaned)
-    if "2" in chars:
-        return "".join("2" if ch == "2" else "1" for ch in cleaned)
-
-    zeros = cleaned.count("0")
-    ones = cleaned.count("1")
-    if zeros == 0 or ones == 0:
-        return "".join("1" for _ in cleaned)
-
-    def as_walls(wall_char: str) -> str:
-        return "".join("2" if ch == wall_char else "1" for ch in cleaned)
-
-    if zeros != ones:
-        return as_walls("0" if zeros < ones else "1")
-    return as_walls("1")
+    counts = {ch: cleaned.count(ch) for ch in set(cleaned)}
+    if len(counts) <= 1:
+        return "1" * len(cleaned)
+    wall_char = min(counts, key=lambda ch: (counts[ch], -int(ch)))
+    return "".join("2" if ch == wall_char else "1" for ch in cleaned)
 
 
 def _cycle_coloring_possible(grid) -> bool:
@@ -653,42 +677,23 @@ def _cycle_coloring_possible(grid) -> bool:
     return black == white
 
 
-def tour_to_snakemap(tour):
-    """Convert [(row, col), ...] into the 4-direction snakemap used by render_compound."""
-    smap = [[[0, 0, 0, 0] for _ in range(10)] for _ in range(9)]
-    for (r1, c1), (r2, c2) in zip(tour, tour[1:]):
-        if r2 == r1 - 1 and c2 == c1:
-            smap[r1][c1][0] = 1
-            smap[r2][c2][1] = 1
-        elif r2 == r1 + 1 and c2 == c1:
-            smap[r1][c1][1] = 1
-            smap[r2][c2][0] = 1
-        elif c2 == c1 - 1 and r2 == r1:
-            smap[r1][c1][2] = 1
-            smap[r2][c2][3] = 1
-        elif c2 == c1 + 1 and r2 == r1:
-            smap[r1][c1][3] = 1
-            smap[r2][c2][2] = 1
-    return smap
+def _result(content: str, grid=None, tour=None, is_cycle: bool = False) -> PatternResult:
+    png = None
+    if grid is not None:
+        png = wall_render.render_board_png(
+            grid, tour, is_cycle=is_cycle, caption=content
+        )
+    return PatternResult(content=content, png=png)
 
 
-def render_tour(grid, tour) -> str:
-    wmap = [row[:] for row in grid]
-    smap = tour_to_snakemap(tour)
-    for r, c in tour:
-        if wmap[r][c] != 2:
-            wmap[r][c] = 3
-    return render_compound(wmap, smap)
-
-
-def check_pattern(pattern_string):
-    ''' (string) -> str
-    Solve a small-board pattern: Ham Cycle first, then Ham Path (Wall Research).
-    '''
+def check_pattern(pattern_string) -> PatternResult:
+    '''Solve a small-board pattern: Ham Cycle first, then Ham Path (Wall Research).'''
     pattern_string = canonicalize_pattern_string(pattern_string)
 
     if(len(pattern_string) != 90):
-        return "I can solve only Small Board patterns, so I'm expecting exactly 90 characters"
+        return PatternResult(
+            "I can solve only Small Board patterns, so I'm expecting exactly 90 characters"
+        )
     grid = stringToBoardArray(pattern_string)
     wall_count = pattern_string.count("2")
 
@@ -696,19 +701,16 @@ def check_pattern(pattern_string):
         pattern = Pattern(10, 9, wmap=copy(grid), walls=wall_count)
         solution = pattern.solve()
         if solution:
-            return "Ham Cycle\n```\n" + str(solution) + "```"
+            tour = hampath.tour_from_snakemap(solution.wallmap, solution.snakemap)
+            if tour:
+                return _result(f"Ham Cycle · {wall_count} walls", grid, tour, True)
+            return PatternResult("Ham Cycle (could not draw tour)")
 
     if not hampath.coloring_allows_path(grid):
-        return "No Ham Cycle or Ham Path (coloring)"
+        return _result("No Ham Cycle or Ham Path (coloring)", grid)
 
     tour = hampath.find_hamiltonian_path(grid)
     if tour:
         gap = hampath.path_end_gap(tour)
-        start_r, start_c = tour[0]
-        end_r, end_c = tour[-1]
-        return (
-            f"Ham Path (gap {gap})\n```\n{render_tour(grid, tour)}```\n"
-            f"Start: Column {start_c + 1} Row {start_r + 1} → "
-            f"End: Column {end_c + 1} Row {end_r + 1}"
-        )
-    return "No Ham Cycle or Ham Path"
+        return _result(f"Ham Path · gap {gap} · {wall_count} walls", grid, tour, False)
+    return _result("No Ham Cycle or Ham Path", grid)

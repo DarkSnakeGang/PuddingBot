@@ -4493,8 +4493,8 @@ class FastSnakeStats(commands.Cog):
             "Tools",
             "- `/caption` — ESMBot-style caption on an image or GIF\n"
             "- Select Image — right-click a message → Apps → Select Image\n"
-            "- `/wallall` — solve a small-board Wall All Ham Cycle or Ham Path (90-cell 0/1 or 1/2 grid)\n"
-            "- `pattern <grid>` — same solver as a text command\n"
+            "- `/wallall` — solve small-board Wall All (paste pudding `pattern 12…` copy, or a 90-cell 0/1 or 1/2 grid)\n"
+            "- `pattern <grid>` — same solver; pudding clipboard paste works as-is\n"
             "- `/help` — this command list",
         ),
     ]
