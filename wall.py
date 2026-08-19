@@ -621,9 +621,8 @@ def _map_to_empty_and_wall(cleaned: str) -> str:
     """Infer which digit is walls.
 
     - `2` is always a wall (legacy 1=empty / 2=wall).
-    - For 0/1 only: pick the encoding with at least MIN_WALLS walls;
-      if both work, walls are the minority digit (typical Wall All).
-      On a 45/45 tie, treat 1 as wall (bitmap occupancy).
+    - For 0/1 only: walls are the minority digit (typical Wall All occupancy).
+      On a 45/45 tie, treat 1 as wall.
     """
     chars = set(cleaned)
     if "2" in chars:
@@ -637,12 +636,6 @@ def _map_to_empty_and_wall(cleaned: str) -> str:
     def as_walls(wall_char: str) -> str:
         return "".join("2" if ch == wall_char else "1" for ch in cleaned)
 
-    zero_ok = zeros >= MIN_WALLS
-    one_ok = ones >= MIN_WALLS
-    if zero_ok and not one_ok:
-        return as_walls("0")
-    if one_ok and not zero_ok:
-        return as_walls("1")
     if zeros != ones:
         return as_walls("0" if zeros < ones else "1")
     return as_walls("1")
