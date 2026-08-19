@@ -11,6 +11,8 @@ from discord.ext import commands
 from responses import get_response, is_allowed_poi_message
 import data_management as dm
 import asyncio
+import wall
+import wall_stream
 from wall import PatternResult
 
 # Load Token
@@ -110,6 +112,30 @@ async def send_message(message: Message, user_message: str, user="Nobody") -> No
 
         def status_notify(text: str) -> None:
             asyncio.run_coroutine_threadsafe(target.send(text), loop)
+
+        if wall.is_pattern_message(user_message):
+            cleaned = wall.parse_pattern_input(user_message)
+            if not cleaned:
+                await target.send(
+                    "Use `/wallall` or paste pudding copy (`pattern` plus a 90-cell 1/2 grid)."
+                )
+                return
+            if len(cleaned) != 90:
+                await target.send(
+                    "I can solve only Small Board patterns, so I'm expecting exactly 90 characters"
+                )
+                return
+            try:
+                await wall_stream.stream_pattern_solve(
+                    cleaned,
+                    lambda result: wall_stream.send_pattern_message(target, result),
+                    wall_stream.edit_pattern_message,
+                )
+            except asyncio.TimeoutError:
+                await target.send(
+                    "Solve timed out after 45s. Try a different pattern (or one with more walls)."
+                )
+            return
 
         # Run sync AI / response logic off the event loop so status messages can send
         response = await asyncio.to_thread(

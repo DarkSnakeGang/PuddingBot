@@ -43,6 +43,10 @@ class PatternResult:
     content: str
     png: Optional[bytes] = None
 
+
+# Match Wall Research Board-tab closer-endpoint search.
+IMPROVE_SECONDS = 12.0
+
 ## PHASE 1 :  Let's generate some wall patterns
 
 def strpiece(l):
@@ -686,31 +690,118 @@ def _result(content: str, grid=None, tour=None, is_cycle: bool = False) -> Patte
     return PatternResult(content=content, png=png)
 
 
-def check_pattern(pattern_string) -> PatternResult:
-    '''Solve a small-board pattern: Ham Cycle first, then Ham Path (Wall Research).'''
+def _path_caption(wall_count: int, gap, min_gap, *, best: bool, searching: bool) -> str:
+    if searching and not best:
+        return (
+            f"Ham Path · gap {gap} · closest possible {min_gap} · "
+            f"{wall_count} walls · searching closer…"
+        )
+    if best:
+        return f"Ham Path · gap {gap} · closest · {wall_count} walls"
+    return (
+        f"Ham Path · gap {gap} · not proven closest (min {min_gap}) · "
+        f"{wall_count} walls"
+    )
+
+
+def _emit_path(on_update, wall_count, grid, tour, *, cycle_possible: bool, searching: bool, best=None):
+    gap = hampath.path_end_gap(tour)
+    min_gap = hampath.min_path_end_gap(len(tour), cycle_possible=cycle_possible)
+    if best is None:
+        best = gap is not None and gap <= min_gap
+    result = _result(
+        _path_caption(wall_count, gap, min_gap, best=best, searching=searching),
+        grid,
+        tour,
+        False,
+    )
+    if on_update:
+        on_update(result)
+    return result, best
+
+
+def solve_pattern(pattern_string, on_update=None) -> PatternResult:
+    """Solve, then tighten head–tail gap like the Wall Research Board tab.
+
+    on_update(PatternResult) is called for the first tour and each closer one.
+    """
     pattern_string = canonicalize_pattern_string(pattern_string)
 
-    if(len(pattern_string) != 90):
-        return PatternResult(
+    if len(pattern_string) != 90:
+        result = PatternResult(
             "I can solve only Small Board patterns, so I'm expecting exactly 90 characters"
         )
+        if on_update:
+            on_update(result)
+        return result
+
     grid = stringToBoardArray(pattern_string)
     wall_count = pattern_string.count("2")
+    cycle_coloring = _cycle_coloring_possible(grid)
+    searched_cycle = False
 
-    if wall_count >= MIN_WALLS and _cycle_coloring_possible(grid):
+    if wall_count >= MIN_WALLS and cycle_coloring:
+        searched_cycle = True
         pattern = Pattern(10, 9, wmap=copy(grid), walls=wall_count)
         solution = pattern.solve()
         if solution:
             tour = hampath.tour_from_snakemap(solution.wallmap, solution.snakemap)
             if tour:
-                return _result(f"Ham Cycle · {wall_count} walls", grid, tour, True)
-            return PatternResult("Ham Cycle (could not draw tour)")
+                result = _result(f"Ham Cycle · {wall_count} walls", grid, tour, True)
+            else:
+                result = PatternResult("Ham Cycle (could not draw tour)")
+            if on_update:
+                on_update(result)
+            return result
 
     if not hampath.coloring_allows_path(grid):
-        return _result("No Ham Cycle or Ham Path (coloring)", grid)
+        result = _result("No Ham Cycle or Ham Path (coloring)", grid)
+        if on_update:
+            on_update(result)
+        return result
 
     tour = hampath.find_hamiltonian_path(grid)
-    if tour:
-        gap = hampath.path_end_gap(tour)
-        return _result(f"Ham Path · gap {gap} · {wall_count} walls", grid, tour, False)
-    return _result("No Ham Cycle or Ham Path", grid)
+    if not tour:
+        result = _result("No Ham Cycle or Ham Path", grid)
+        if on_update:
+            on_update(result)
+        return result
+
+    # After a failed cycle search, gap 1 is a cycle, so the path minimum is 3
+    # on even boards. If we skipped cycle search, still allow gap 1.
+    cycle_possible = cycle_coloring and not searched_cycle
+    gap = hampath.path_end_gap(tour)
+    min_gap = hampath.min_path_end_gap(len(tour), cycle_possible=cycle_possible)
+    already_best = gap is not None and gap <= min_gap
+    result, best = _emit_path(
+        on_update, wall_count, grid, tour,
+        cycle_possible=cycle_possible, searching=not already_best, best=already_best,
+    )
+    if best:
+        return result
+
+    def on_better(new_tour, new_gap, is_best):
+        nonlocal tour
+        tour = new_tour
+        _emit_path(
+            on_update, wall_count, grid, tour,
+            cycle_possible=cycle_possible, searching=True, best=is_best,
+        )
+
+    tour, _gap, best = hampath.improve_path_endpoints(
+        grid,
+        tour,
+        time_limit=IMPROVE_SECONDS,
+        on_better=on_better,
+        cycle_possible=cycle_possible,
+    )
+    result, _ = _emit_path(
+        on_update, wall_count, grid, tour,
+        cycle_possible=cycle_possible, searching=False, best=best,
+    )
+    return result
+
+
+def check_pattern(pattern_string) -> PatternResult:
+    """Solve a small-board pattern: Ham Cycle first, then closest Ham Path."""
+    return solve_pattern(pattern_string)

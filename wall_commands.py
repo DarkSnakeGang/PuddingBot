@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import io
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 import wall
+import wall_stream
 
-SOLVE_TIMEOUT_SECONDS = 45
+SOLVE_TIMEOUT_SECONDS = wall_stream.FIRST_SOLVE_TIMEOUT
 
 
 class WallAll(commands.Cog):
@@ -40,29 +40,27 @@ class WallAll(commands.Cog):
             return
 
         await interaction.response.defer()
+
+        async def send(result: wall.PatternResult) -> discord.Message:
+            file = wall_stream.pattern_file(result)
+            content = result.content or ""
+            if len(content) > 1900:
+                content = content[:1900] + "\n…(truncated)"
+            if file:
+                return await interaction.followup.send(content, file=file)
+            return await interaction.followup.send(content)
+
         try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(wall.check_pattern, cleaned),
-                timeout=SOLVE_TIMEOUT_SECONDS,
+            await wall_stream.stream_pattern_solve(
+                cleaned, send, wall_stream.edit_pattern_message
             )
         except asyncio.TimeoutError:
             await interaction.followup.send(
                 "Solve timed out after 45s. Try a different pattern (or one with more walls)."
             )
-            return
         except Exception as error:
             print(f"Error in /wallall: {error}")
             await interaction.followup.send("Failed to solve that pattern.")
-            return
-
-        content = result.content
-        if len(content) > 1900:
-            content = content[:1900] + "\n…(truncated)"
-        if result.png:
-            file = discord.File(io.BytesIO(result.png), filename="wallall.png")
-            await interaction.followup.send(content, file=file)
-        else:
-            await interaction.followup.send(content)
 
 
 async def setup(bot: commands.Bot):
