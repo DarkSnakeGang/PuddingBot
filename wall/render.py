@@ -1,41 +1,38 @@
-"""Wall Research Board-tab PNG of a 10×9 wall grid and ham tour.
+"""Wall Research Board-tab PNG (local Board snake design).
 
-Mirrors gui/static/index.html showTour() + .grid/.cell styles:
-  --board-cell 42px, --board-gap 4px, border-radius 6px
-  empty #dfe7f0, solved empty #c8d2dc, wall #3b4250
-  snake #14532d / #3ecf7a, start #e6c35c, end #6eb0ea
+Matches Documents/GoogleSnakeWallResearch gui/static/index.html showTour():
+dark checkerboard, zero gap, blue tapered body, Google-Snake head at path end.
 """
 
 from __future__ import annotations
 
 import io
+import math
 import os
 from typing import List, Optional, Sequence, Tuple
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-# Board tab base unit is 42px cells / 4px gap; render at 3× then downsample.
+# Board CSS: --board-cell 42px, --board-gap 0. Render at 3× then downsample.
 SCALE = 3
 BASE_CELL = 42
-BASE_GAP = 4
-BASE_RADIUS = 6
-
 CELL = BASE_CELL * SCALE
-GAP = BASE_GAP * SCALE
-RADIUS = BASE_RADIUS * SCALE
-PAD = 14 * SCALE
+GAP = 0
+FRAME = 3 * SCALE
+FRAME_RADIUS = 6 * SCALE
+PAD = 10 * SCALE
 
-BG = (18, 20, 26)           # --bg
-CELL_EMPTY = (223, 231, 240)  # #dfe7f0
-CELL_SOLVED = (200, 210, 220)  # #c8d2dc (.grid.solved .cell)
-CELL_WALL = (59, 66, 80)      # #3b4250
-SNAKE_DARK = (20, 83, 45)     # #14532d
-SNAKE_LIGHT = (62, 207, 122)  # #3ecf7a
-ARROW = (12, 47, 28)          # #0c2f1c
-START_FILL = (230, 195, 92)   # #e6c35c
-START_STROKE = (26, 20, 0)    # #1a1400
-END_FILL = (110, 176, 234)    # #6eb0ea
-END_STROKE = (11, 28, 44)     # #0b1c2c
+BG = (18, 20, 26)
+BOARD_BG = (18, 18, 22)       # #121216
+FRAME_COL = (46, 46, 54)      # --board-frame
+CHK_A = (26, 26, 31)          # --board-chk-a
+CHK_B = (36, 36, 44)          # --board-chk-b
+WALL = (5, 5, 5)              # --board-wall
+HEAD_COL = (0x5B, 0x8D, 0xEF)
+TIP_COL = (0x2A, 0x4A, 0xB8)
+EYE = (255, 255, 255)
+PUPIL = (0x1A, 0x3A, 0x8A)
+NOSTRIL = (0x2A, 0x4A, 0x9A)
 TEXT = (232, 236, 241)
 
 Point = Tuple[float, float]
@@ -58,81 +55,145 @@ def _font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-def _cell_origin(r: int, c: int, y0: float = 0.0) -> Point:
-    return (PAD + c * (CELL + GAP), y0 + PAD + r * (CELL + GAP))
+def _mix(t: float) -> Tuple[int, int, int]:
+    t = max(0.0, min(1.0, t))
+    return tuple(int(round(h + (p - h) * t)) for h, p in zip(HEAD_COL, TIP_COL))
 
 
-def _cell_center(r: int, c: int, y0: float = 0.0) -> Point:
-    x, y = _cell_origin(r, c, y0)
+def _cell_origin(r: int, c: int, x0: float, y0: float) -> Point:
+    return (x0 + c * CELL, y0 + r * CELL)
+
+
+def _cell_center(r: int, c: int, x0: float, y0: float) -> Point:
+    x, y = _cell_origin(r, c, x0, y0)
     return (x + CELL / 2, y + CELL / 2)
 
 
-def _polyline(draw: ImageDraw.ImageDraw, pts: Sequence[Point], fill, width: float) -> None:
-    """Rounded stroke like SVG stroke-linecap/join round."""
-    if len(pts) < 2:
-        return
-    r = width / 2
-    draw.line(list(pts), fill=fill, width=max(1, int(round(width))), joint="curve")
-    for x, y in pts:
-        draw.ellipse((x - r, y - r, x + r, y + r), fill=fill)
+def _rot(local_x: float, local_y: float, ux: float, uy: float, ox: float, oy: float) -> Point:
+    """Map head-local coords (forward = +x) into image space using facing (ux, uy)."""
+    # SVG rotate(atan2(uy,ux)) then +x is forward.
+    return (ox + local_x * ux - local_y * uy, oy + local_x * uy + local_y * ux)
 
 
-def _triangle(draw: ImageDraw.ImageDraw, p1: Point, p2: Point, p3: Point, fill) -> None:
-    draw.polygon([p1, p2, p3], fill=fill)
-
-
-def _segment_arrows(draw: ImageDraw.ImageDraw, pts: Sequence[Point]) -> None:
-    # showTour: h=7*scale, w=5.5*scale at mid 0.62 along each segment
-    h, w = 7.0 * SCALE, 5.5 * SCALE
-    for i in range(len(pts) - 1):
-        ax, ay = pts[i]
-        bx, by = pts[i + 1]
-        dx, dy = bx - ax, by - ay
-        length = (dx * dx + dy * dy) ** 0.5 or 1.0
-        ux, uy = dx / length, dy / length
-        mx = ax + ux * length * 0.62
-        my = ay + uy * length * 0.62
-        _triangle(
-            draw,
-            (mx + ux * h, my + uy * h),
-            (mx - ux * h - uy * w, my - uy * h + ux * w),
-            (mx - ux * h + uy * w, my - uy * h - ux * w),
-            ARROW,
-        )
-
-
-def _head_arrow(draw: ImageDraw.ImageDraw, pts: Sequence[Point]) -> None:
-    # showTour: tip 16*scale, side 4/10*scale
-    if len(pts) < 2:
-        return
-    ax, ay = pts[0]
-    bx, by = pts[1]
-    dx, dy = bx - ax, by - ay
-    length = (dx * dx + dy * dy) ** 0.5 or 1.0
-    ux, uy = dx / length, dy / length
-    tip = (ax + ux * 16 * SCALE, ay + uy * 16 * SCALE)
-    left = (ax - ux * 4 * SCALE - uy * 10 * SCALE, ay - uy * 4 * SCALE + ux * 10 * SCALE)
-    right = (ax - ux * 4 * SCALE + uy * 10 * SCALE, ay - uy * 4 * SCALE - ux * 10 * SCALE)
-    _triangle(draw, tip, left, right, START_STROKE)
-
-
-def _circle(draw: ImageDraw.ImageDraw, center: Point, radius: float, fill, stroke, stroke_w: float) -> None:
+def _circle(draw: ImageDraw.ImageDraw, center: Point, radius: float, fill, *, alpha_img=None) -> None:
     x, y = center
-    sw = max(1, int(round(stroke_w)))
-    box = (x - radius, y - radius, x + radius, y + radius)
-    draw.ellipse(box, fill=fill, outline=stroke, width=sw)
+    r = max(0.5, radius)
+    box = (x - r, y - r, x + r, y + r)
+    if alpha_img is not None:
+        ImageDraw.Draw(alpha_img).ellipse(box, fill=fill)
+    else:
+        draw.ellipse(box, fill=fill)
 
 
-def _inset_ring(draw: ImageDraw.ImageDraw, origin: Point, color) -> None:
-    """Match .cell.snake.start/end { box-shadow: inset 0 0 0 3px … }."""
-    x, y = origin
-    inset = 3 * SCALE
-    draw.rounded_rectangle(
-        (x + inset, y + inset, x + CELL - inset, y + CELL - inset),
-        radius=max(1, RADIUS - inset),
-        outline=color,
-        width=inset,
-    )
+def _stroke_seg(
+    draw: ImageDraw.ImageDraw,
+    a: Point,
+    b: Point,
+    width: float,
+    color: Tuple[int, int, int],
+) -> None:
+    w = max(1, int(round(width)))
+    r = width / 2
+    draw.line([a, b], fill=color, width=w)
+    for x, y in (a, b):
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=color)
+
+
+def _draw_snake(draw: ImageDraw.ImageDraw, pts: Sequence[Point], cell: float) -> None:
+    """Port of Board-tab showTour body + Google-Snake head (head = path end)."""
+    n = len(pts)
+    if n == 0:
+        return
+    head_i = n - 1
+    neck_i = n - 2 if n > 1 else 0
+    ux, uy = 0.0, -1.0
+    if n > 1:
+        dx = pts[head_i][0] - pts[neck_i][0]
+        dy = pts[head_i][1] - pts[neck_i][1]
+        length = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / length, dy / length
+
+    tip_pull = head_pull = 0.0
+    if n > 1:
+        gap_px = math.hypot(pts[0][0] - pts[head_i][0], pts[0][1] - pts[head_i][1])
+        if gap_px < cell * 1.25:
+            tip_pull = cell * 0.45
+            head_pull = cell * 0.2
+
+    tip_x, tip_y = pts[0]
+    if n > 1 and tip_pull:
+        dx = pts[1][0] - pts[0][0]
+        dy = pts[1][1] - pts[0][1]
+        length = math.hypot(dx, dy) or 1.0
+        tip_x += (dx / length) * tip_pull
+        tip_y += (dy / length) * tip_pull
+
+    head_x = pts[head_i][0] - ux * head_pull
+    head_y = pts[head_i][1] - uy * head_pull
+
+    head_w = cell * 0.7
+    tip_w = cell * 0.32
+
+    def t_at(i: int) -> float:
+        return 0.0 if n <= 1 else (head_i - i) / head_i
+
+    def width_at(t: float) -> float:
+        return head_w * (1 - t) + tip_w * t
+
+    poly: List[Tuple[float, float, float]] = [(tip_x, tip_y, 1.0)]
+    for i in range(1, head_i):
+        poly.append((pts[i][0], pts[i][1], t_at(i)))
+    poly.append((head_x, head_y, 0.0))
+
+    for i in range(len(poly) - 1):
+        x0, y0, t0 = poly[i]
+        x1, y1, t1 = poly[i + 1]
+        steps = 4
+        for s in range(steps):
+            u0 = s / steps
+            u1 = (s + 1) / steps
+            xa = x0 + (x1 - x0) * u0
+            ya = y0 + (y1 - y0) * u0
+            xb = x0 + (x1 - x0) * u1
+            yb = y0 + (y1 - y0) * u1
+            t = t0 * (1 - (u0 + u1) / 2) + t1 * ((u0 + u1) / 2)
+            _stroke_seg(draw, (xa, ya), (xb, yb), width_at(t), _mix(t))
+
+    # Head (Google Snake style)
+    col = _mix(0)
+    neck_r = head_w / 2
+    bulge_r = neck_r * 0.82
+    bulge_x = neck_r * 0.12
+    bulge_y = neck_r * 0.92
+    snout_r = neck_r * 1.02
+    snout_x = neck_r * 0.78
+    eye_r = max(2.6 * (cell / 42), bulge_r * 0.72)
+    eye_x = bulge_x + bulge_r * 0.02
+    eye_y = bulge_y
+    pupil_r = max(1.3 * (cell / 42), eye_r * 0.4)
+    pupil_fwd = eye_r * 0.38
+    pupil_in = eye_r * 0.1
+    nostril_r = max(0.7 * (cell / 42), neck_r * 0.08)
+    nostril_x = snout_x + snout_r * 0.58
+    nostril_y = neck_r * 0.14
+
+    for lx, ly, rad, fill in (
+        (0.0, 0.0, neck_r, col),
+        (bulge_x, -bulge_y, bulge_r, col),
+        (bulge_x, bulge_y, bulge_r, col),
+        (snout_x, 0.0, snout_r, col),
+    ):
+        _circle(draw, _rot(lx, ly, ux, uy, head_x, head_y), rad, fill)
+
+    for lx, ly, rad, fill in (
+        (eye_x, -eye_y, eye_r, EYE),
+        (eye_x, eye_y, eye_r, EYE),
+        (eye_x + pupil_fwd, -eye_y + pupil_in, pupil_r, PUPIL),
+        (eye_x + pupil_fwd, eye_y - pupil_in, pupil_r, PUPIL),
+        (nostril_x, -nostril_y, nostril_r, NOSTRIL),
+        (nostril_x, nostril_y, nostril_r, NOSTRIL),
+    ):
+        _circle(draw, _rot(lx, ly, ux, uy, head_x, head_y), rad, fill)
 
 
 def render_board_png(
@@ -142,12 +203,14 @@ def render_board_png(
     is_cycle: bool = False,
     caption: str = "",
 ) -> bytes:
-    """PNG matching the Wall Research Board tab grid + snake SVG."""
+    """PNG matching the local Wall Research Board tab (blue snake)."""
     title_h = 18 * SCALE if caption else 0
-    grid_w = 10 * CELL + 9 * GAP
-    grid_h = 9 * CELL + 8 * GAP
-    width = PAD * 2 + grid_w
-    height = title_h + PAD * 2 + grid_h
+    grid_w = 10 * CELL
+    grid_h = 9 * CELL
+    inner_x = PAD + FRAME
+    inner_y = title_h + PAD + FRAME
+    width = PAD * 2 + FRAME * 2 + grid_w
+    height = title_h + PAD * 2 + FRAME * 2 + grid_h
 
     img = Image.new("RGB", (width, height), BG)
     draw = ImageDraw.Draw(img)
@@ -155,40 +218,109 @@ def render_board_png(
     if caption:
         draw.text((PAD, 6 * SCALE), caption, fill=TEXT, font=_font(10 * SCALE))
 
-    y0 = float(title_h)
-    solved = bool(tour)
-    empty_fill = CELL_SOLVED if solved else CELL_EMPTY
+    # Framed board
+    draw.rounded_rectangle(
+        (PAD, title_h + PAD, PAD + FRAME * 2 + grid_w, title_h + PAD + FRAME * 2 + grid_h),
+        radius=FRAME_RADIUS,
+        fill=BOARD_BG,
+        outline=FRAME_COL,
+        width=FRAME,
+    )
 
     for r in range(9):
         for c in range(10):
-            x, y = _cell_origin(r, c, y0)
-            fill = CELL_WALL if grid[r][c] == 2 else empty_fill
-            draw.rounded_rectangle(
-                (x, y, x + CELL, y + CELL),
-                radius=RADIUS,
-                fill=fill,
-            )
+            x, y = _cell_origin(r, c, inner_x, inner_y)
+            if grid[r][c] == 2:
+                fill = WALL
+            else:
+                fill = CHK_B if (r + c) & 1 else CHK_A
+            draw.rectangle((x, y, x + CELL, y + CELL), fill=fill)
 
     if tour:
-        pts: List[Point] = [_cell_center(r, c, y0) for r, c in tour]
-        if is_cycle and len(pts) > 1:
-            pts.append(pts[0])
+        pts: List[Point] = [_cell_center(r, c, inner_x, inner_y) for r, c in tour]
+        # Soft drop shadow (Board feDropShadow)
+        shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        sdraw = ImageDraw.Draw(shadow)
+        _draw_snake_shadow(
+            sdraw,
+            [(p[0], p[1] + CELL * 0.05) for p in pts],
+            float(CELL),
+        )
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=max(1.0, CELL * 0.045)))
+        base = img.convert("RGBA")
+        img = Image.alpha_composite(base, shadow).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        _draw_snake(draw, pts, float(CELL))
 
-        _polyline(draw, pts, SNAKE_DARK, 26 * SCALE)
-        _polyline(draw, pts, SNAKE_LIGHT, 20 * SCALE)
-        _segment_arrows(draw, pts)
-
-        sr, sc = tour[0]
-        _inset_ring(draw, _cell_origin(sr, sc, y0), START_FILL)
-        if not is_cycle:
-            er, ec = tour[-1]
-            _inset_ring(draw, _cell_origin(er, ec, y0), END_FILL)
-            _circle(draw, pts[-1], 9 * SCALE, END_FILL, END_STROKE, 2 * SCALE)
-        _circle(draw, pts[0], 11 * SCALE, START_FILL, START_STROKE, 2 * SCALE)
-        _head_arrow(draw, pts)
-
-    # Downsample 3× → Board-native resolution (sharp on Discord)
     out = img.resize((width // SCALE, height // SCALE), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     out.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
+
+
+def _draw_snake_shadow(draw: ImageDraw.ImageDraw, pts: Sequence[Point], cell: float) -> None:
+    """Same geometry as _draw_snake but flat translucent black for blur shadow."""
+    n = len(pts)
+    if n == 0:
+        return
+    head_i = n - 1
+    neck_i = n - 2 if n > 1 else 0
+    ux, uy = 0.0, -1.0
+    if n > 1:
+        dx = pts[head_i][0] - pts[neck_i][0]
+        dy = pts[head_i][1] - pts[neck_i][1]
+        length = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / length, dy / length
+    tip_pull = head_pull = 0.0
+    if n > 1:
+        gap_px = math.hypot(pts[0][0] - pts[head_i][0], pts[0][1] - pts[head_i][1])
+        if gap_px < cell * 1.25:
+            tip_pull = cell * 0.45
+            head_pull = cell * 0.2
+    tip_x, tip_y = pts[0]
+    if n > 1 and tip_pull:
+        dx = pts[1][0] - pts[0][0]
+        dy = pts[1][1] - pts[0][1]
+        length = math.hypot(dx, dy) or 1.0
+        tip_x += (dx / length) * tip_pull
+        tip_y += (dy / length) * tip_pull
+    head_x = pts[head_i][0] - ux * head_pull
+    head_y = pts[head_i][1] - uy * head_pull
+    head_w = cell * 0.7
+    tip_w = cell * 0.32
+
+    def t_at(i: int) -> float:
+        return 0.0 if n <= 1 else (head_i - i) / head_i
+
+    def width_at(t: float) -> float:
+        return head_w * (1 - t) + tip_w * t
+
+    poly = [(tip_x, tip_y, 1.0)]
+    for i in range(1, head_i):
+        poly.append((pts[i][0], pts[i][1], t_at(i)))
+    poly.append((head_x, head_y, 0.0))
+    ink = (0, 0, 0, 100)
+    for i in range(len(poly) - 1):
+        x0, y0, t0 = poly[i]
+        x1, y1, t1 = poly[i + 1]
+        for s in range(4):
+            u0, u1 = s / 4, (s + 1) / 4
+            xa = x0 + (x1 - x0) * u0
+            ya = y0 + (y1 - y0) * u0
+            xb = x0 + (x1 - x0) * u1
+            yb = y0 + (y1 - y0) * u1
+            t = t0 * (1 - (u0 + u1) / 2) + t1 * ((u0 + u1) / 2)
+            w = width_at(t)
+            r = w / 2
+            draw.line([(xa, ya), (xb, yb)], fill=ink, width=max(1, int(round(w))))
+            for x, y in ((xa, ya), (xb, yb)):
+                draw.ellipse((x - r, y - r, x + r, y + r), fill=ink)
+    neck_r = head_w / 2
+    for lx, ly, rad in (
+        (0.0, 0.0, neck_r),
+        (neck_r * 0.12, -neck_r * 0.92, neck_r * 0.82),
+        (neck_r * 0.12, neck_r * 0.92, neck_r * 0.82),
+        (neck_r * 0.78, 0.0, neck_r * 1.02),
+    ):
+        cx, cy = _rot(lx, ly, ux, uy, head_x, head_y)
+        draw.ellipse((cx - rad, cy - rad, cx + rad, cy + rad), fill=ink)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 from typing import Awaitable, Callable, Optional
 
@@ -20,7 +21,9 @@ EditFn = Callable[[discord.Message, PatternResult], Awaitable[None]]
 def pattern_file(result: PatternResult) -> Optional[discord.File]:
     if not result.png:
         return None
-    return discord.File(io.BytesIO(result.png), filename="wallall.png")
+    # Unique name so Discord CDN does not reuse a cached older attachment.
+    digest = hashlib.sha1(result.png).hexdigest()[:10]
+    return discord.File(io.BytesIO(result.png), filename=f"wallall-{digest}.png")
 
 
 def _content(result: PatternResult) -> str:
