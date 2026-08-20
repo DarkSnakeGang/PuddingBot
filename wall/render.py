@@ -1,4 +1,10 @@
-"""Wall Research Board-tab style PNG of a 10×9 wall grid and ham tour."""
+"""Wall Research Board-tab PNG of a 10×9 wall grid and ham tour.
+
+Mirrors gui/static/index.html showTour() + .grid/.cell styles:
+  --board-cell 42px, --board-gap 4px, border-radius 6px
+  empty #dfe7f0, solved empty #c8d2dc, wall #3b4250
+  snake #14532d / #3ecf7a, start #e6c35c, end #6eb0ea
+"""
 
 from __future__ import annotations
 
@@ -8,24 +14,29 @@ from typing import List, Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw, ImageFont
 
-COLS, ROWS = 10, 9
-CELL = 84  # 2× the Board tab 42px cells, then downsampled
-GAP = 8
-PAD = 28
-RADIUS = 12
+# Board tab base unit is 42px cells / 4px gap; render at 3× then downsample.
+SCALE = 3
+BASE_CELL = 42
+BASE_GAP = 4
+BASE_RADIUS = 6
 
-BG = (18, 20, 26)
-CELL_EMPTY = (200, 210, 220)
-CELL_WALL = (59, 66, 80)
-SNAKE_DARK = (20, 83, 45)
-SNAKE_LIGHT = (62, 207, 122)
-ARROW = (12, 47, 28)
-START_FILL = (230, 195, 92)
-START_STROKE = (26, 20, 0)
-END_FILL = (110, 176, 234)
-END_STROKE = (11, 28, 44)
+CELL = BASE_CELL * SCALE
+GAP = BASE_GAP * SCALE
+RADIUS = BASE_RADIUS * SCALE
+PAD = 14 * SCALE
+
+BG = (18, 20, 26)           # --bg
+CELL_EMPTY = (223, 231, 240)  # #dfe7f0
+CELL_SOLVED = (200, 210, 220)  # #c8d2dc (.grid.solved .cell)
+CELL_WALL = (59, 66, 80)      # #3b4250
+SNAKE_DARK = (20, 83, 45)     # #14532d
+SNAKE_LIGHT = (62, 207, 122)  # #3ecf7a
+ARROW = (12, 47, 28)          # #0c2f1c
+START_FILL = (230, 195, 92)   # #e6c35c
+START_STROKE = (26, 20, 0)    # #1a1400
+END_FILL = (110, 176, 234)    # #6eb0ea
+END_STROKE = (11, 28, 44)     # #0b1c2c
 TEXT = (232, 236, 241)
-MUTED = (147, 160, 176)
 
 Point = Tuple[float, float]
 Cell = Tuple[int, int]
@@ -47,20 +58,21 @@ def _font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-def _cell_origin(r: int, c: int) -> Point:
-    return (PAD + c * (CELL + GAP), PAD + r * (CELL + GAP))
+def _cell_origin(r: int, c: int, y0: float = 0.0) -> Point:
+    return (PAD + c * (CELL + GAP), y0 + PAD + r * (CELL + GAP))
 
 
-def _cell_center(r: int, c: int) -> Point:
-    x, y = _cell_origin(r, c)
+def _cell_center(r: int, c: int, y0: float = 0.0) -> Point:
+    x, y = _cell_origin(r, c, y0)
     return (x + CELL / 2, y + CELL / 2)
 
 
-def _polyline(draw: ImageDraw.ImageDraw, pts: Sequence[Point], fill, width: int) -> None:
+def _polyline(draw: ImageDraw.ImageDraw, pts: Sequence[Point], fill, width: float) -> None:
+    """Rounded stroke like SVG stroke-linecap/join round."""
     if len(pts) < 2:
         return
     r = width / 2
-    draw.line(list(pts), fill=fill, width=width, joint="curve")
+    draw.line(list(pts), fill=fill, width=max(1, int(round(width))), joint="curve")
     for x, y in pts:
         draw.ellipse((x - r, y - r, x + r, y + r), fill=fill)
 
@@ -70,7 +82,8 @@ def _triangle(draw: ImageDraw.ImageDraw, p1: Point, p2: Point, p3: Point, fill) 
 
 
 def _segment_arrows(draw: ImageDraw.ImageDraw, pts: Sequence[Point]) -> None:
-    h, w = 14.0, 11.0
+    # showTour: h=7*scale, w=5.5*scale at mid 0.62 along each segment
+    h, w = 7.0 * SCALE, 5.5 * SCALE
     for i in range(len(pts) - 1):
         ax, ay = pts[i]
         bx, by = pts[i + 1]
@@ -89,6 +102,7 @@ def _segment_arrows(draw: ImageDraw.ImageDraw, pts: Sequence[Point]) -> None:
 
 
 def _head_arrow(draw: ImageDraw.ImageDraw, pts: Sequence[Point]) -> None:
+    # showTour: tip 16*scale, side 4/10*scale
     if len(pts) < 2:
         return
     ax, ay = pts[0]
@@ -96,16 +110,29 @@ def _head_arrow(draw: ImageDraw.ImageDraw, pts: Sequence[Point]) -> None:
     dx, dy = bx - ax, by - ay
     length = (dx * dx + dy * dy) ** 0.5 or 1.0
     ux, uy = dx / length, dy / length
-    tip = (ax + ux * 32, ay + uy * 32)
-    left = (ax - ux * 8 - uy * 20, ay - uy * 8 + ux * 20)
-    right = (ax - ux * 8 + uy * 20, ay - uy * 8 - ux * 20)
+    tip = (ax + ux * 16 * SCALE, ay + uy * 16 * SCALE)
+    left = (ax - ux * 4 * SCALE - uy * 10 * SCALE, ay - uy * 4 * SCALE + ux * 10 * SCALE)
+    right = (ax - ux * 4 * SCALE + uy * 10 * SCALE, ay - uy * 4 * SCALE - ux * 10 * SCALE)
     _triangle(draw, tip, left, right, START_STROKE)
 
 
-def _circle(draw: ImageDraw.ImageDraw, center: Point, radius: float, fill, stroke, stroke_w: int) -> None:
+def _circle(draw: ImageDraw.ImageDraw, center: Point, radius: float, fill, stroke, stroke_w: float) -> None:
     x, y = center
+    sw = max(1, int(round(stroke_w)))
     box = (x - radius, y - radius, x + radius, y + radius)
-    draw.ellipse(box, fill=fill, outline=stroke, width=stroke_w)
+    draw.ellipse(box, fill=fill, outline=stroke, width=sw)
+
+
+def _inset_ring(draw: ImageDraw.ImageDraw, origin: Point, color) -> None:
+    """Match .cell.snake.start/end { box-shadow: inset 0 0 0 3px … }."""
+    x, y = origin
+    inset = 3 * SCALE
+    draw.rounded_rectangle(
+        (x + inset, y + inset, x + CELL - inset, y + CELL - inset),
+        radius=max(1, RADIUS - inset),
+        outline=color,
+        width=inset,
+    )
 
 
 def render_board_png(
@@ -115,35 +142,27 @@ def render_board_png(
     is_cycle: bool = False,
     caption: str = "",
 ) -> bytes:
-    """PNG matching the Wall Research Board tab: rounded cells + green snake."""
-    title_h = 52 if caption else 0
-    legend_h = 44
-    grid_w = COLS * CELL + (COLS - 1) * GAP
-    grid_h = ROWS * CELL + (ROWS - 1) * GAP
+    """PNG matching the Wall Research Board tab grid + snake SVG."""
+    title_h = 18 * SCALE if caption else 0
+    grid_w = 10 * CELL + 9 * GAP
+    grid_h = 9 * CELL + 8 * GAP
     width = PAD * 2 + grid_w
-    height = title_h + PAD * 2 + grid_h + legend_h
+    height = title_h + PAD * 2 + grid_h
 
     img = Image.new("RGB", (width, height), BG)
     draw = ImageDraw.Draw(img)
 
     if caption:
-        font = _font(28)
-        draw.text((PAD, 14), caption, fill=TEXT, font=font)
+        draw.text((PAD, 6 * SCALE), caption, fill=TEXT, font=_font(10 * SCALE))
 
-    y_shift = title_h
+    y0 = float(title_h)
+    solved = bool(tour)
+    empty_fill = CELL_SOLVED if solved else CELL_EMPTY
 
-    def origin(r: int, c: int) -> Point:
-        x, y = _cell_origin(r, c)
-        return (x, y + y_shift)
-
-    def center(r: int, c: int) -> Point:
-        x, y = _cell_center(r, c)
-        return (x, y + y_shift)
-
-    for r in range(ROWS):
-        for c in range(COLS):
-            x, y = origin(r, c)
-            fill = CELL_WALL if grid[r][c] == 2 else CELL_EMPTY
+    for r in range(9):
+        for c in range(10):
+            x, y = _cell_origin(r, c, y0)
+            fill = CELL_WALL if grid[r][c] == 2 else empty_fill
             draw.rounded_rectangle(
                 (x, y, x + CELL, y + CELL),
                 radius=RADIUS,
@@ -151,48 +170,25 @@ def render_board_png(
             )
 
     if tour:
-        pts: List[Point] = [center(r, c) for r, c in tour]
+        pts: List[Point] = [_cell_center(r, c, y0) for r, c in tour]
         if is_cycle and len(pts) > 1:
             pts.append(pts[0])
-        _polyline(draw, pts, SNAKE_DARK, 52)
-        _polyline(draw, pts, SNAKE_LIGHT, 40)
+
+        _polyline(draw, pts, SNAKE_DARK, 26 * SCALE)
+        _polyline(draw, pts, SNAKE_LIGHT, 20 * SCALE)
         _segment_arrows(draw, pts)
-        start = pts[0]
+
         sr, sc = tour[0]
-        sx, sy = origin(sr, sc)
-        draw.rounded_rectangle(
-            (sx + 4, sy + 4, sx + CELL - 4, sy + CELL - 4),
-            radius=RADIUS - 2,
-            outline=START_FILL,
-            width=6,
-        )
+        _inset_ring(draw, _cell_origin(sr, sc, y0), START_FILL)
         if not is_cycle:
             er, ec = tour[-1]
-            ex, ey = origin(er, ec)
-            draw.rounded_rectangle(
-                (ex + 4, ey + 4, ex + CELL - 4, ey + CELL - 4),
-                radius=RADIUS - 2,
-                outline=END_FILL,
-                width=6,
-            )
-            _circle(draw, pts[-1], 18, END_FILL, END_STROKE, 4)
-        _circle(draw, start, 22, START_FILL, START_STROKE, 4)
+            _inset_ring(draw, _cell_origin(er, ec, y0), END_FILL)
+            _circle(draw, pts[-1], 9 * SCALE, END_FILL, END_STROKE, 2 * SCALE)
+        _circle(draw, pts[0], 11 * SCALE, START_FILL, START_STROKE, 2 * SCALE)
         _head_arrow(draw, pts)
 
-    legend_y = title_h + PAD + grid_h + 16
-    legend_font = _font(22)
-    lx = PAD
-    _circle(draw, (lx + 12, legend_y + 12), 10, START_FILL, START_STROKE, 2)
-    draw.text((lx + 28, legend_y), "start", fill=MUTED, font=legend_font)
-    lx += 120
-    if not is_cycle:
-        _circle(draw, (lx + 12, legend_y + 12), 10, END_FILL, END_STROKE, 2)
-        draw.text((lx + 28, legend_y), "end", fill=MUTED, font=legend_font)
-        lx += 100
-    draw.rounded_rectangle((lx, legend_y + 2, lx + 22, legend_y + 24), radius=4, fill=CELL_WALL)
-    draw.text((lx + 30, legend_y), "wall", fill=MUTED, font=legend_font)
-
-    out = img.resize((width // 2, height // 2), Image.Resampling.LANCZOS)
+    # Downsample 3× → Board-native resolution (sharp on Discord)
+    out = img.resize((width // SCALE, height // SCALE), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     out.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
