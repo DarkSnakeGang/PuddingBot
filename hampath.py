@@ -297,78 +297,78 @@ def _color_count(rem):
     return black
 
 
-def _warnsdorff_dfs(head, rem, nleft, black, required_end=None, nodes=None, node_limit=0, path=None, deadline=0.0):
+def _warnsdorff_dfs(
+    head,
+    rem,
+    nleft,
+    black,
+    required_end=None,
+    nodes=None,
+    node_limit=0,
+    path=None,
+    deadline=0.0,
+):
     """Exhaustive ham path from head covering rem. Neighbors in Warnsdorff order.
 
     Completeness: every neighbor is tried on backtrack. Speed: low-degree first,
-    serpentine tie-break, forced corridors. If path is a list, it is filled with
-    cell indexes of a covering path on success.
+    serpentine tie-break, forced corridors, connectivity only at branches.
+    If path is a list, successful search appends cell indices in visit order.
     """
     prog = current_progress()
-    origin_len = len(path) if path is not None else None
-    if path is not None:
-        path.append(head)
+    added = 0
+
+    def fail():
+        if path is not None and added:
+            del path[-added:]
+        return False
+
     while True:
         if deadline and time.perf_counter() > deadline:
-            if path is not None:
-                del path[origin_len:]
-            return False
+            return fail()
         if node_limit:
             nodes[0] += 1
             if nodes[0] > node_limit:
-                if path is not None:
-                    del path[origin_len:]
-                return False
+                return fail()
             if prog is not None:
                 prog.add(1)
         elif prog is not None:
             prog.add(1)
         if nleft <= 1:
-            ok = required_end is None or head == required_end
-            if not ok and path is not None:
-                del path[origin_len:]
-            return ok
+            if required_end is None or head == required_end:
+                if path is not None:
+                    path.append(head)
+                return True
+            return fail()
         if required_end is not None and head == required_end:
-            if path is not None:
-                del path[origin_len:]
-            return False
+            return fail()
         white = nleft - black
         if nleft & 1:
             if _color_of(head):
                 if black != white + 1:
-                    if path is not None:
-                        del path[origin_len:]
-                    return False
+                    return fail()
             elif white != black + 1:
-                if path is not None:
-                    del path[origin_len:]
-                return False
+                return fail()
         elif black != white:
-            if path is not None:
-                del path[origin_len:]
-            return False
+            return fail()
         open_cells = rem ^ (1 << head)
         n_open = nleft - 1
         black_open = black - (1 if _color_of(head) else 0)
         nbrs = [n for n in NEIGHBORS[head] if open_cells & (1 << n)]
         if not nbrs:
-            if path is not None:
-                del path[origin_len:]
-            return False
+            return fail()
         isolated = [n for n in nbrs if (NBR_MASK[n] & open_cells) == 0]
         if isolated:
             if len(isolated) > 1 or n_open != 1:
-                if path is not None:
-                    del path[origin_len:]
-                return False
+                return fail()
             nbrs = isolated
         if len(nbrs) == 1:
+            if path is not None:
+                path.append(head)
+                added += 1
             head = nbrs[0]
             rem = open_cells
             nleft = n_open
             black = black_open
-            if path is not None:
-                path.append(head)
             continue
         n_deg1 = 0
         deg1_open = []
@@ -378,23 +378,17 @@ def _warnsdorff_dfs(head, rem, nleft, black, required_end=None, nodes=None, node
             i = b.bit_length() - 1
             d = (NBR_MASK[i] & open_cells).bit_count()
             if d == 0:
-                if path is not None:
-                    del path[origin_len:]
-                return False
+                return fail()
             if d == 1:
                 n_deg1 += 1
                 if n_deg1 > 2:
-                    if path is not None:
-                        del path[origin_len:]
-                    return False
+                    return fail()
                 deg1_open.append(i)
             r ^= b
         if n_deg1 == 2:
             nbrs = [n for n in nbrs if n in set(deg1_open)]
             if not nbrs:
-                if path is not None:
-                    del path[origin_len:]
-                return False
+                return fail()
         hr = head // WIDTH
         nbrs.sort(
             key=lambda n: (
@@ -402,16 +396,25 @@ def _warnsdorff_dfs(head, rem, nleft, black, required_end=None, nodes=None, node
                 0 if (hr % 2 == 0 and n == head + 1) or (hr % 2 == 1 and n == head - 1) else 1,
             )
         )
+        if path is not None:
+            path.append(head)
+            added += 1
         for n in nbrs:
             if _reachable_mask(n, open_cells) != open_cells:
                 continue
             if _warnsdorff_dfs(
-                n, open_cells, n_open, black_open, required_end, nodes, node_limit, path, deadline
+                n,
+                open_cells,
+                n_open,
+                black_open,
+                required_end,
+                nodes,
+                node_limit,
+                path,
+                deadline,
             ):
                 return True
-        if path is not None:
-            del path[origin_len:]
-        return False
+        return fail()
 
 
 def _path_starts(free, nfree, deg1):
@@ -428,23 +431,20 @@ def _path_starts(free, nfree, deg1):
     return starts
 
 
-def _exhaustive_ham_path(grid, node_limit=0, budgets=None, path=None):
+def _exhaustive_ham_path(grid, node_limit=0, budgets=None, want_path=False, deadline=0.0):
     """Warnsdorff-ordered DFS. Completes every branch; no timeout-as-no.
 
     Iterative deepening over starts so a good endpoint is tried before
     exhausting a bad one. node_limit > 0 is a yes-filter only.
     budgets: explicit list; 0 means unlimited. Default IDA then unlimited.
-    If path is a list, it receives cell indexes of a covering path on success.
+    want_path: return [(row, col), ...] or None instead of True/False.
     """
     free = _free_mask(grid)
     nfree = free.bit_count()
     if nfree <= 1:
-        if path is not None:
-            path.clear()
-            for i in range(N):
-                if free & (1 << i):
-                    path.append(i)
-                    break
+        cells = [divmod(i, WIDTH) for i in range(N) if free & (1 << i)]
+        if want_path:
+            return cells
         return True
     black = _color_count(free)
     deg1 = [i for i in range(N) if (free & (1 << i)) and _degree(i, free) == 1]
@@ -464,13 +464,14 @@ def _exhaustive_ham_path(grid, node_limit=0, budgets=None, path=None):
         for s in starts:
             if budget:
                 nodes[0] = 0
-            if path is not None:
-                path.clear()
-            if _warnsdorff_dfs(s, free, nfree, black, required_end, nodes, budget, path):
+            found = [] if want_path else None
+            if _warnsdorff_dfs(
+                s, free, nfree, black, required_end, nodes, budget, found, deadline
+            ):
+                if want_path:
+                    return [divmod(i, WIDTH) for i in found]
                 return True
-    if path is not None:
-        path.clear()
-    return False
+    return None if want_path else False
 
 
 def _in_bounds(x, y):
@@ -1209,10 +1210,11 @@ def min_path_end_gap(nfree, cycle_possible=False):
     return 1 if cycle_possible else 3
 
 
-def find_hamiltonian_path(grid):
+def find_hamiltonian_path(grid, time_limit=None):
     """Return covering path as [(row, col), ...], or None if none found.
 
     First path is enough; does not search for closer endpoints.
+    time_limit None: 0s under a progress scope (batch), else 15s.
     """
     if len(grid) != HEIGHT or len(grid[0]) != WIDTH:
         raise ValueError(f"expected {HEIGHT}x{WIDTH} grid")
@@ -1233,16 +1235,19 @@ def find_hamiltonian_path(grid):
     tour = _warnsdorff_tour(grid)
     if tour and verify_path(grid, tour):
         return tour
-    if prog is not None:
-        prog.set_phase("path exhaustive DFS")
-    path_idx: list = []
-    if _exhaustive_ham_path(grid, path=path_idx) and path_idx:
-        cells = [divmod(i, WIDTH) for i in path_idx]
-        if verify_path(grid, cells):
-            return cells
+    if time_limit is None:
+        limit = 0.0 if prog is not None else 15.0
+    else:
+        limit = float(time_limit)
+    deadline = (time.perf_counter() + limit) if limit else 0.0
+    # Same DFS the processor uses for has_path; PathBoard.solve often misses it.
+    found = _exhaustive_ham_path(
+        grid, want_path=True, deadline=deadline, budgets=(4_000, 16_000, 0)
+    )
+    if found and verify_path(grid, found):
+        return found
     if prog is not None:
         prog.set_phase("path forced-fill search")
-    limit = 0.0 if prog is not None else 15.0
     if PathBoard(grid).solve(time_limit=limit) and PathBoard.last_win:
         cells = PathBoard.last_win.path_cells()
         if cells and verify_path(grid, cells):
