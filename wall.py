@@ -45,7 +45,7 @@ class PatternResult:
 
 
 # Match Wall Research Board-tab closer-endpoint search.
-IMPROVE_SECONDS = 12.0
+IMPROVE_SECONDS = 90.0
 
 ## PHASE 1 :  Let's generate some wall patterns
 

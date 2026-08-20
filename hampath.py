@@ -12,6 +12,7 @@ Prunes, in order:
      tie-break, forced corridors). Timeouts never count as no.
 """
 
+import collections
 import threading
 import time
 
@@ -296,7 +297,7 @@ def _color_count(rem):
     return black
 
 
-def _warnsdorff_dfs(head, rem, nleft, black, required_end=None, nodes=None, node_limit=0, path=None):
+def _warnsdorff_dfs(head, rem, nleft, black, required_end=None, nodes=None, node_limit=0, path=None, deadline=0.0):
     """Exhaustive ham path from head covering rem. Neighbors in Warnsdorff order.
 
     Completeness: every neighbor is tried on backtrack. Speed: low-degree first,
@@ -308,6 +309,10 @@ def _warnsdorff_dfs(head, rem, nleft, black, required_end=None, nodes=None, node
     if path is not None:
         path.append(head)
     while True:
+        if deadline and time.perf_counter() > deadline:
+            if path is not None:
+                del path[origin_len:]
+            return False
         if node_limit:
             nodes[0] += 1
             if nodes[0] > node_limit:
@@ -401,7 +406,7 @@ def _warnsdorff_dfs(head, rem, nleft, black, required_end=None, nodes=None, node
             if _reachable_mask(n, open_cells) != open_cells:
                 continue
             if _warnsdorff_dfs(
-                n, open_cells, n_open, black_open, required_end, nodes, node_limit, path
+                n, open_cells, n_open, black_open, required_end, nodes, node_limit, path, deadline
             ):
                 return True
         if path is not None:
@@ -1252,80 +1257,127 @@ def _cell_manhattan(a, b):
 
 
 def _path_between(grid, start, end, node_limit, deadline):
-    """Warnsdorff search for a ham path from start index to end index."""
+    """Ham path from start index to end index, or None."""
     free = _free_mask(grid)
     nfree = free.bit_count()
     if not ((free & (1 << start)) and (free & (1 << end))):
         return None
     if start == end:
         return [divmod(start, WIDTH)] if nfree == 1 else None
-    nodes = 0
     path = []
-    prog = current_progress()
-
-    def deg(i, rem):
-        d = 0
-        for n in NEIGHBORS[i]:
-            if rem & (1 << n):
-                d += 1
-        return d
-
-    def dfs(head, rem):
-        nonlocal nodes
-        if time.perf_counter() > deadline:
-            return False
-        nodes += 1
-        if nodes > node_limit:
-            return False
-        if prog is not None:
-            prog.add(1)
-        leftover = rem.bit_count()
-        if leftover == 1:
-            if head != end:
-                return False
-            path.append(head)
-            return True
-        if head == end:
-            return False
-        path.append(head)
-        open_cells = rem & ~(1 << head)
-        if not (open_cells & (1 << end)):
-            path.pop()
-            return False
-        nbrs = [n for n in NEIGHBORS[head] if open_cells & (1 << n)]
-        if leftover == 2:
-            if end not in nbrs:
-                path.pop()
-                return False
-            nbrs = [end]
-        else:
-            nbrs = [n for n in nbrs if n != end]
-            if not nbrs:
-                path.pop()
-                return False
-            er, ec = divmod(end, WIDTH)
-            nbrs.sort(key=lambda n: (
-                deg(n, open_cells),
-                -(abs(n // WIDTH - er) + abs(n % WIDTH - ec)),
-            ))
-        for n in nbrs:
-            if dfs(n, open_cells):
-                return True
-        path.pop()
-        return False
-
-    if dfs(start, free) and len(path) == nfree:
+    nodes = [0] if node_limit else None
+    if _warnsdorff_dfs(
+        start,
+        free,
+        nfree,
+        _color_count(free),
+        end,
+        nodes,
+        node_limit,
+        path,
+        deadline,
+    ):
         tour = [divmod(i, WIDTH) for i in path]
         return tour if verify_path(grid, tour) else None
     return None
 
 
-def improve_path_endpoints(grid, tour, time_limit=12.0, on_better=None, cycle_possible=False):
+def _cells_to_idx(tour):
+    return [r * WIDTH + c for r, c in tour]
+
+
+def _idx_to_cells(path):
+    return [divmod(i, WIDTH) for i in path]
+
+
+def _posa_from_tail(path):
+    """Posa rotations that keep a Hamiltonian path and change the tail."""
+    n = len(path)
+    pos = {v: i for i, v in enumerate(path)}
+    tail = path[-1]
+    out = []
+    for nbr in NEIGHBORS[tail]:
+        i = pos.get(nbr)
+        if i is None or i >= n - 2:
+            continue
+        out.append(path[: i + 1] + path[-1:i:-1])
+    return out
+
+
+def _rotation_improve(grid, tour, min_d, deadline=0.0, on_better=None, state_limit=20_000):
+    """BFS of Posa rotations from an existing covering path. Fast gap shrink."""
+    if not tour or len(tour) <= 2:
+        d = path_end_gap(tour)
+        return tour, d, d is not None and d <= min_d
+    start = _cells_to_idx(tour)
+    best_path = start
+    best_d = _cell_manhattan(start[0], start[-1])
+    if best_d <= min_d:
+        return tour, best_d, True
+    seen = {(min(start[0], start[-1]), max(start[0], start[-1]))}
+    q = collections.deque([start])
+    prog = current_progress()
+    if prog is not None:
+        prog.set_phase(f"rotate endpoints (gap {best_d}, best {min_d})")
+    steps = 0
+    while q:
+        if deadline and time.perf_counter() > deadline:
+            break
+        steps += 1
+        if steps > state_limit:
+            break
+        if prog is not None and steps % 256 == 0:
+            prog.add(256)
+        cur = q.popleft()
+        for base in (cur, cur[::-1]):
+            for nxt in _posa_from_tail(base):
+                a, b = nxt[0], nxt[-1]
+                key = (a, b) if a < b else (b, a)
+                if key in seen:
+                    continue
+                seen.add(key)
+                d = _cell_manhattan(a, b)
+                if d < best_d:
+                    best_d = d
+                    best_path = nxt
+                    cells = _idx_to_cells(nxt)
+                    if on_better is not None:
+                        on_better(cells, best_d, best_d <= min_d)
+                    if prog is not None:
+                        prog.set_phase(
+                            f"rotate endpoints (gap {best_d}, best {min_d})"
+                        )
+                    if best_d <= min_d:
+                        return cells, best_d, True
+                q.append(nxt)
+    cells = _idx_to_cells(best_path)
+    return cells, best_d, best_d <= min_d
+
+
+def _pathboard_between(grid, start, end, deadline):
+    """Forced-fill ham path with these ends. Returns (tour_or_None, timed_out)."""
+    ra, ca = divmod(start, WIDTH)
+    rb, cb = divmod(end, WIDTH)
+    board = PathBoard(grid)
+    board._deadline = float(deadline or 0.0)
+    if board._try_end_pair((ca, ra), (cb, rb)):
+        win = PathBoard.last_win
+        if win:
+            cells = win.path_cells()
+            if cells and verify_path(grid, cells):
+                return cells, False
+        return None, False
+    return None, bool(board._timed_out)
+
+
+def improve_path_endpoints(grid, tour, time_limit=90.0, on_better=None, cycle_possible=False):
     """Search for a covering path with a smaller head-tail gap.
 
-    Calls on_better(tour, gap, best) each time a closer path is found.
-    Returns (tour, gap, best). best means the gap is the theoretical minimum
-    or every closer endpoint pair was exhausted.
+    Rotates the current snake first, then tries closer endpoint pairs.
+    Prefer nearer improvements (current_gap-1, …) before the theoretical
+    minimum so a hard gap-1 search cannot block finding gap 3/4.
+    Calls on_better(tour, gap, best) on improvements.
+    Returns (tour, gap, best). Timeouts / inconclusive mins never count as proven.
     """
     if not tour:
         return None, None, False
@@ -1342,14 +1394,22 @@ def improve_path_endpoints(grid, tour, time_limit=12.0, on_better=None, cycle_po
     if len(deg1) == 2:
         return tour, best_d, True
 
-    prog = current_progress()
-    if prog is not None:
-        prog.set_phase(f"closer endpoints (gap {best_d}, best {min_d})")
+    deadline = (time.perf_counter() + time_limit) if time_limit else 0.0
+    tour, best_d, is_best = _rotation_improve(
+        grid, tour, min_d, deadline=deadline, on_better=on_better
+    )
+    if is_best or best_d <= min_d:
+        return tour, best_d, True
+    if deadline and time.perf_counter() > deadline:
+        return tour, best_d, False
 
+    prog = current_progress()
     cells = [i for i in range(N) if free & (1 << i)]
     black = sum(1 for i in cells if _color_of(i))
     white = len(cells) - black
-    deadline = time.perf_counter() + time_limit
+
+    def timed_out():
+        return bool(deadline) and time.perf_counter() > deadline
 
     def pair_ok(a, b):
         if a == b:
@@ -1376,14 +1436,51 @@ def improve_path_endpoints(grid, tour, time_limit=12.0, on_better=None, cycle_po
             if not pair_ok(a, b):
                 continue
             by_dist.setdefault(d, []).append((a, b))
+    for d, pairs in by_dist.items():
+        pairs.sort(key=lambda p: _degree(p[0], free) + _degree(p[1], free))
 
-    for d in range(best_d - 1, min_d - 1, -1):
+    def try_gap(d):
+        """Return 'found', 'impossible', 'inconclusive', or 'timeout'."""
+        nonlocal tour, best_d
         pairs = by_dist.get(d) or []
-        found = False
-        for node_limit in (4000, 16000, 50000, 250000):
-            for a, b in pairs:
-                if time.perf_counter() > deadline:
-                    return tour, best_d, False
+        if not pairs:
+            return "impossible"
+        leftover = []
+        if prog is not None:
+            prog.set_phase(f"closest ends gap {d} (forced fill, {len(pairs)} pairs)")
+        for a, b in pairs:
+            if timed_out():
+                return "timeout"
+            prune_until = time.perf_counter() + 0.08
+            if deadline:
+                prune_until = min(prune_until, deadline)
+            cand, unsure = _pathboard_between(grid, a, b, prune_until)
+            if cand:
+                tour = cand
+                best_d = d
+                if on_better is not None:
+                    on_better(tour, best_d, best_d <= min_d)
+                return "found"
+            if unsure:
+                leftover.append((a, b))
+        budgets = (16_000, 64_000, 250_000, 0)
+        if len(leftover) < 80:
+            budgets = (4_000,) + budgets
+        for node_limit in budgets:
+            if timed_out():
+                return "timeout"
+            if not leftover:
+                break
+            if prog is not None:
+                cap = "unlimited" if not node_limit else f"{node_limit:,} cap"
+                prog.set_phase(
+                    f"closest ends gap {d} ({cap}, {len(leftover)} pairs)"
+                )
+            still = []
+            for a, b in leftover:
+                if timed_out():
+                    return "timeout"
+                hit = False
                 for start, end in ((a, b), (b, a)):
                     if len(deg1) == 1 and start != deg1[0]:
                         continue
@@ -1391,24 +1488,45 @@ def improve_path_endpoints(grid, tour, time_limit=12.0, on_better=None, cycle_po
                     if cand:
                         tour = cand
                         best_d = d
-                        is_best = best_d <= min_d
                         if on_better is not None:
-                            on_better(tour, best_d, is_best)
-                        if is_best:
-                            return tour, best_d, True
-                        found = True
-                        break
-                if found:
-                    break
-            if found:
-                break
-        if found and prog is not None:
-            prog.set_phase(f"closer endpoints (gap {best_d}, best {min_d})")
+                            on_better(tour, best_d, best_d <= min_d)
+                        return "found"
+                    hit = True
+                if node_limit or hit:
+                    still.append((a, b))
+            leftover = still if node_limit else []
+        return "inconclusive" if leftover else "impossible"
+
+    # Nearer improvements first so a hard theoretical minimum (often gap 1)
+    # cannot consume the whole budget before gap 3/4 are tried.
+    inconclusive = False
+    for d in range(best_d - 1, min_d - 1, -1):
+        if timed_out():
+            return tour, best_d, False
+        if d >= best_d:
+            continue
+        status = try_gap(d)
+        if status == "found":
+            # Larger-gap inconclusives no longer matter for proving this gap.
+            inconclusive = False
+            if best_d <= min_d:
+                return tour, best_d, True
+            # Drop pairs that are no longer an improvement; keep searching smaller.
+            by_dist = {k: v for k, v in by_dist.items() if k < best_d}
+            continue
+        if status == "timeout":
+            return tour, best_d, False
+        if status == "inconclusive" and d < best_d:
+            inconclusive = True
+    if best_d <= min_d:
+        return tour, best_d, True
+    if inconclusive:
+        return tour, best_d, False
     return tour, best_d, True
 
 
-def find_hamiltonian_path_closest_ends(grid, time_limit=12.0):
-    """Board-tab helper: first path, then closer head-tail if time allows."""
+def find_hamiltonian_path_closest_ends(grid, time_limit=90.0):
+    """First covering path, then a closer head-tail if time allows."""
     tour = find_hamiltonian_path(grid)
     if not tour:
         return None

@@ -11,7 +11,7 @@ import discord
 import wall
 
 FIRST_SOLVE_TIMEOUT = 45
-IMPROVE_WAIT_TIMEOUT = 18  # 12s search + render slack
+IMPROVE_WAIT_TIMEOUT = 105  # 90s Board-tab improve + render slack
 
 SendFn = Callable[[wall.PatternResult], Awaitable[discord.Message]]
 EditFn = Callable[[discord.Message, wall.PatternResult], Awaitable[None]]
