@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import wall
-import wall_stream
+from wall import stream as wall_stream
 
 SOLVE_TIMEOUT_SECONDS = wall_stream.FIRST_SOLVE_TIMEOUT
 

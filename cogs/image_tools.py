@@ -13,7 +13,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from image_caption import caption_image
+from .image_caption import caption_image
 
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
 HISTORY_LIMIT = 50

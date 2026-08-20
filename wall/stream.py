@@ -8,36 +8,36 @@ from typing import Awaitable, Callable, Optional
 
 import discord
 
-import wall
+from . import PatternResult, solve_pattern
 
 FIRST_SOLVE_TIMEOUT = 45
 IMPROVE_WAIT_TIMEOUT = 105  # 90s Board-tab improve + render slack
 
-SendFn = Callable[[wall.PatternResult], Awaitable[discord.Message]]
-EditFn = Callable[[discord.Message, wall.PatternResult], Awaitable[None]]
+SendFn = Callable[[PatternResult], Awaitable[discord.Message]]
+EditFn = Callable[[discord.Message, PatternResult], Awaitable[None]]
 
 
-def pattern_file(result: wall.PatternResult) -> Optional[discord.File]:
+def pattern_file(result: PatternResult) -> Optional[discord.File]:
     if not result.png:
         return None
     return discord.File(io.BytesIO(result.png), filename="wallall.png")
 
 
-def _content(result: wall.PatternResult) -> str:
+def _content(result: PatternResult) -> str:
     text = result.content or ""
     if len(text) > 1900:
         return text[:1900] + "\n…(truncated)"
     return text
 
 
-async def send_pattern_message(target, result: wall.PatternResult) -> discord.Message:
+async def send_pattern_message(target, result: PatternResult) -> discord.Message:
     file = pattern_file(result)
     if file:
         return await target.send(_content(result), file=file)
     return await target.send(_content(result))
 
 
-async def edit_pattern_message(message: discord.Message, result: wall.PatternResult) -> None:
+async def edit_pattern_message(message: discord.Message, result: PatternResult) -> None:
     file = pattern_file(result)
     if file:
         await message.edit(content=_content(result), attachments=[file])
@@ -54,12 +54,12 @@ async def stream_pattern_solve(
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
-    def on_update(result: wall.PatternResult) -> None:
+    def on_update(result: PatternResult) -> None:
         loop.call_soon_threadsafe(queue.put_nowait, result)
 
     def work() -> None:
         try:
-            wall.solve_pattern(cleaned, on_update=on_update)
+            solve_pattern(cleaned, on_update=on_update)
         except Exception as error:
             loop.call_soon_threadsafe(queue.put_nowait, error)
         else:

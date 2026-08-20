@@ -1,4 +1,6 @@
 @echo off
+cd /d "%~dp0.."
+
 if exist .env\ (
   echo ERROR: .env is a directory. Delete it and create a real .env file first.
   exit /b 1

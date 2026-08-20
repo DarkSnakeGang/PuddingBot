@@ -27,14 +27,13 @@ PuddingBot is a Discord bot designed for the Google Snake gaming community, now 
 
 2. **Build and run with Docker**:
    ```bash
-   # Build the Docker image
+   # From repo root (or use the helper scripts)
+   ./scripts/run_docker.sh
+   # Windows: scripts\run_docker.bat
+
+   # Or manually:
    docker build -t puddingbot .
-   
-   # Run in background
-   docker run -d --name puddingbot-container puddingbot
-   
-   # Or run in foreground to see logs
-   docker run --name puddingbot-container puddingbot
+   docker run -d --name puddingbot-container --env-file .env puddingbot
    ```
 
 3. **Check logs**:
@@ -63,16 +62,21 @@ The bot now uses Ollama for AI responses instead of external APIs:
 - `@PuddingBot clear context` - Clear conversation context
 - `gif <emotion>` - Get a random GIF
 - `roll dice` - Roll a 6-sided die
-- `pattern <pattern_string>` - Solve a wall pattern
+- `pattern <pattern_string>` - Solve a wall pattern (pudding clipboard paste works as-is)
+- `/wallall` - Same Wall All solver via slash command
 
 ## File Structure
 
-- `main.py` - Main Discord bot logic
-- `responses.py` - Response generation and command handling
-- `gpt.py` - Ollama AI integration
-- `wall.py` - Wall pattern solving algorithm
-- `Dockerfile` - Docker configuration with Ollama
-- `requirements.txt` - Python dependencies
+```text
+/
+  main.py, start.sh, Dockerfile, requirements.txt
+  responses.py, gpt.py, data_management.py, github_cache_fetcher.py, wr_watch.py
+  cogs/          Discord slash/context command extensions
+  wall/          Wall All solver, renderer, Discord stream updates
+  tests/         Local smoke tests
+  scripts/       Docker helper scripts
+  assets/        Memes, fonts, GIFs
+```
 
 ## Troubleshooting
 
@@ -85,7 +89,12 @@ The bot now uses Ollama for AI responses instead of external APIs:
 
 To test the Ollama integration locally:
 ```bash
-python3 test_ollama.py
+python3 tests/test_ollama.py
+```
+
+FastSnakeStats cache smoke test:
+```bash
+python3 tests/test_fastsnakestats.py
 ```
 
 ## Notes

@@ -12,7 +12,7 @@ from responses import get_response, is_allowed_poi_message
 import data_management as dm
 import asyncio
 import wall
-import wall_stream
+import wall.stream as wall_stream
 from wall import PatternResult
 
 # Load Token
@@ -73,7 +73,7 @@ BAD_RNG_COMPLAINT_RE: Final[re.Pattern[str]] = re.compile(
 if not TOKEN:
     raise SystemExit(
         "DISCORD_TOKEN is missing. Put it in .env and restart the container "
-        "with --env-file .env (see run_docker.sh)."
+        "with --env-file .env (see scripts/run_docker.sh)."
     )
 
 # Setup Bot with commands framework
@@ -451,7 +451,13 @@ async def purge_non_poi_messages(channel) -> None:
 
 async def load_extensions():
     """Load all cogs"""
-    for extension in ('admin', 'fastsnakestats', 'image_tools', 'repo_watcher', 'wall_commands'):
+    for extension in (
+        'cogs.admin',
+        'cogs.fastsnakestats',
+        'cogs.image_tools',
+        'cogs.repo_watcher',
+        'cogs.wall_commands',
+    ):
         try:
             await bot.load_extension(extension)
             print(f"Loaded {extension} cog successfully")

@@ -7,8 +7,8 @@ from copy import deepcopy as copy
 from typing import Optional
 import re
 
-import hampath
-import wall_render
+from . import hampath
+from . import render as wall_render
 
 # order --> UP DOWN LEFT RIGHT
 piecedict = {

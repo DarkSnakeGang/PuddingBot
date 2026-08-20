@@ -3910,14 +3910,14 @@ class FastSnakeStats(commands.Cog):
         try:
             tier_value = tier.value if tier else None
             if tier_value == "Free":
-                gif_path = os.path.join(os.path.dirname(__file__), "assets", "unheld_free.gif")
+                gif_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "unheld_free.gif")
                 await interaction.followup.send(
                     file=discord.File(gif_path, filename="unheld_free.gif")
                 )
                 return
 
             if tier_value == "Inhuman" and random.randint(1, 25) == 1:
-                gif_path = os.path.join(os.path.dirname(__file__), "assets", "unheld_inhuman.gif")
+                gif_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "unheld_inhuman.gif")
                 await interaction.followup.send(
                     file=discord.File(gif_path, filename="unheld_inhuman.gif")
                 )

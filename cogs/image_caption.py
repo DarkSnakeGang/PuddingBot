@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont
 
 FONT_PATH = os.path.join(
-    os.path.dirname(__file__), "assets", "fonts", "caption.otf"
+    os.path.dirname(os.path.dirname(__file__)), "assets", "fonts", "caption.otf"
 )
 
 # Discord bot uploads are typically capped at 8 MiB without boosts

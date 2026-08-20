@@ -1,6 +1,8 @@
 #!/bin/bash
 set -e
 
+cd "$(dirname "$0")/.."
+
 if [ ! -f .env ]; then
   if [ -d .env ]; then
     echo "ERROR: .env is a directory (Docker created it because the file was missing)."
