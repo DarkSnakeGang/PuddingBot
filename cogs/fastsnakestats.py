@@ -10,7 +10,7 @@ from datetime import datetime, date, time, timedelta, timezone
 
 from github_cache_fetcher import github_cache_fetcher
 import data_management as dm
-import wr_watch
+from . import wr_watch
 
 # google-snake channel (snake emoji) — https://discord.com/channels/723093146954760222/723093815786864661
 GOOGLE_SNAKE_CHANNEL_ID = int(os.getenv("GOOGLE_SNAKE_CHANNEL_ID", "723093815786864661"))

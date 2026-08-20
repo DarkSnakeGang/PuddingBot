@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 import discord
 from discord import Intents, Message, Object, NotFound, Forbidden, HTTPException, File
 from discord.ext import commands
-from responses import get_response, is_allowed_poi_message
+from chat import get_response, is_allowed_poi_message
 import data_management as dm
 import asyncio
 import wall

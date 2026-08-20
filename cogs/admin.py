@@ -55,13 +55,13 @@ async def _run_command_async(args: list[str], timeout: int) -> subprocess.Comple
 
 
 def _desired_ollama_model() -> str:
-    """Resolve model after git sync: env wins, else default from gpt.py on disk."""
+    """Resolve model after git sync: env wins, else default from chat/gpt.py on disk."""
     env_model = os.getenv("OLLAMA_MODEL")
     if env_model:
         return env_model.strip().strip('"').strip("'")
 
     try:
-        with open(os.path.join(APP_DIR, "gpt.py"), encoding="utf-8") as handle:
+        with open(os.path.join(APP_DIR, "chat", "gpt.py"), encoding="utf-8") as handle:
             text = handle.read()
         match = re.search(
             r'OLLAMA_MODEL\s*=\s*os\.getenv\(\s*["\']OLLAMA_MODEL["\']\s*,\s*["\']([^"\']+)["\']\s*\)',
@@ -70,7 +70,7 @@ def _desired_ollama_model() -> str:
         if match:
             return match.group(1)
     except Exception as e:
-        print(f"Could not read OLLAMA_MODEL from gpt.py: {e}")
+        print(f"Could not read OLLAMA_MODEL from chat/gpt.py: {e}")
 
     return DEFAULT_OLLAMA_MODEL
 

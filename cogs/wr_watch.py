@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-STATE_PATH = os.path.join(os.path.dirname(__file__), "wr_watch_state.json")
+STATE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "wr_watch_state.json")
 MAX_WATCHES_PER_USER = 15
 MAX_WATCHES_TOTAL = 80
 

@@ -1,6 +1,6 @@
 from random import choice, randint
 import requests as rq
-import gpt
+from . import gpt
 import wall
 import os
 import re

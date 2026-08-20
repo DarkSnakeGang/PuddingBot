@@ -70,7 +70,8 @@ The bot now uses Ollama for AI responses instead of external APIs:
 ```text
 /
   main.py, start.sh, Dockerfile, requirements.txt
-  responses.py, gpt.py, data_management.py, github_cache_fetcher.py, wr_watch.py
+  data_management.py, github_cache_fetcher.py
+  chat/          Message replies and Ollama AI
   cogs/          Discord slash/context command extensions
   wall/          Wall All solver, renderer, Discord stream updates
   tests/         Local smoke tests
