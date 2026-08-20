@@ -233,6 +233,8 @@ def get_response(user_input: str, user="Nobody", status_notify=None) -> str:
             return "So far we know of exactly 235,355,155 wall patterns in small board."
         if "mods" in lowered:
             return "https://googlesnakemods.com"
+        if "pause" in lowered:
+            return "Press Q in Remix or Remix Ultra"
 
     if PuddingBot in lowered:
         print(f"[BOT PINGED] User {user} sent: {user_input}")
