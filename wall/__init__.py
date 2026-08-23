@@ -44,9 +44,6 @@ class PatternResult:
     png: Optional[bytes] = None
 
 
-# Match Wall Research Board-tab closer-endpoint search.
-IMPROVE_SECONDS = 90.0
-
 ## PHASE 1 :  Let's generate some wall patterns
 
 def strpiece(l):
@@ -791,7 +788,7 @@ def solve_pattern(pattern_string, on_update=None) -> PatternResult:
     tour, _gap, best = hampath.improve_path_endpoints(
         grid,
         tour,
-        time_limit=IMPROVE_SECONDS,
+        time_limit=None,
         on_better=on_better,
         cycle_possible=cycle_possible,
     )

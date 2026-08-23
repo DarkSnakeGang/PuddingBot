@@ -12,7 +12,6 @@ import discord
 from . import PatternResult, solve_pattern
 
 FIRST_SOLVE_TIMEOUT = 45
-IMPROVE_WAIT_TIMEOUT = 105  # 90s Board-tab improve + render slack
 
 SendFn = Callable[[PatternResult], Awaitable[discord.Message]]
 EditFn = Callable[[discord.Message, PatternResult], Awaitable[None]]
@@ -74,12 +73,16 @@ async def stream_pattern_solve(
     timed_out = False
     try:
         while True:
-            timeout = FIRST_SOLVE_TIMEOUT if first else IMPROVE_WAIT_TIMEOUT
-            try:
-                item = await asyncio.wait_for(queue.get(), timeout=timeout)
-            except asyncio.TimeoutError:
-                timed_out = True
-                break
+            if first:
+                try:
+                    item = await asyncio.wait_for(
+                        queue.get(), timeout=FIRST_SOLVE_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    break
+            else:
+                item = await queue.get()
             if item is None:
                 break
             if isinstance(item, Exception):

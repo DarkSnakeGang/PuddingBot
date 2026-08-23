@@ -1375,7 +1375,7 @@ def _pathboard_between(grid, start, end, deadline):
     return None, bool(board._timed_out)
 
 
-def improve_path_endpoints(grid, tour, time_limit=90.0, on_better=None, cycle_possible=False):
+def improve_path_endpoints(grid, tour, time_limit=None, on_better=None, cycle_possible=False):
     """Search for a covering path with a smaller head-tail gap.
 
     Rotates the current snake first, then tries closer endpoint pairs.
@@ -1530,7 +1530,7 @@ def improve_path_endpoints(grid, tour, time_limit=90.0, on_better=None, cycle_po
     return tour, best_d, True
 
 
-def find_hamiltonian_path_closest_ends(grid, time_limit=90.0):
+def find_hamiltonian_path_closest_ends(grid, time_limit=None):
     """First covering path, then a closer head-tail if time allows."""
     tour = find_hamiltonian_path(grid)
     if not tour:
