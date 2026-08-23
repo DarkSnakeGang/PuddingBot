@@ -760,6 +760,18 @@ class FastSnakeStats(commands.Cog):
         label = ", ".join(n for n in names if n)
         return f"{label or 'Unknown'} · {time_str}" + (f" ({parts})" if parts else "")
 
+    def _watch_run_links(self, runs: Optional[List]) -> str:
+        if not runs:
+            return ""
+        links = []
+        for i, run in enumerate(runs):
+            link = dm.get_run_link(run)
+            if not link:
+                continue
+            label = "View Run" if len(runs) == 1 else f"Run {i + 1}"
+            links.append(f"[{label}]({link})")
+        return " · ".join(links)
+
     async def _check_wr_watches(self) -> None:
         state = wr_watch.load_state()
         watches = state.get("watches") or []
@@ -787,7 +799,15 @@ class FastSnakeStats(commands.Cog):
                 dm.get_player_name(runs[0]) if runs else "unheld",
                 dm.get_run_time(runs[0]) if runs else "—",
             )
-            flips.setdefault(category, {"old": f"{old_player} · {old_time}", "new": new_line, "pings": {}})
+            flips.setdefault(
+                category,
+                {
+                    "old": f"{old_player} · {old_time}",
+                    "new": new_line,
+                    "run_links": self._watch_run_links(runs),
+                    "pings": {},
+                },
+            )
             channel_id = int(watch.get("channel_id") or 0)
             user_id = int(watch.get("user_id") or 0)
             flips[category]["pings"].setdefault(channel_id, set()).add(user_id)
@@ -798,6 +818,8 @@ class FastSnakeStats(commands.Cog):
                 f"was: {payload['old']}\n"
                 f"now: {payload['new']}"
             )
+            if payload.get("run_links"):
+                line += f"\n{payload['run_links']}"
             for channel_id, user_ids in payload["pings"].items():
                 mentions = " ".join(f"<@{uid}>" for uid in sorted(user_ids))
                 message = f"{mentions}\n{line}" if mentions else line
