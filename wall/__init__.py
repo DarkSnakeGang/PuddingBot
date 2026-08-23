@@ -42,6 +42,7 @@ class PatternResult:
 
     content: str
     png: Optional[bytes] = None
+    retain_image: bool = False
 
 
 ## PHASE 1 :  Let's generate some wall patterns
@@ -757,41 +758,61 @@ def solve_pattern(pattern_string, on_update=None) -> PatternResult:
             on_update(result)
         return result
 
-    tour = hampath.find_hamiltonian_path(grid)
-    if not tour:
-        result = _result("No Ham Cycle or Ham Path", grid)
-        if on_update:
-            on_update(result)
-        return result
-
     # After a failed cycle search, gap 1 is a cycle, so the path minimum is 3
     # on even boards. If we skipped cycle search, still allow gap 1.
     cycle_possible = cycle_coloring and not searched_cycle
-    gap = hampath.path_end_gap(tour)
-    min_gap = hampath.min_path_end_gap(len(tour), cycle_possible=cycle_possible)
-    already_best = gap is not None and gap <= min_gap
-    result, best = _emit_path(
-        on_update, wall_count, grid, tour,
-        cycle_possible=cycle_possible, searching=not already_best, best=already_best,
-    )
-    if best:
-        return result
+    tour = None
 
-    def on_better(new_tour, new_gap, is_best):
-        nonlocal tour
-        tour = new_tour
-        _emit_path(
+    def emit_search_progress(line: str) -> None:
+        if not on_update:
+            return
+        if tour:
+            gap = hampath.path_end_gap(tour)
+            min_gap = hampath.min_path_end_gap(len(tour), cycle_possible=cycle_possible)
+            head = _path_caption(
+                wall_count, gap, min_gap, best=False, searching=True
+            )
+            content = f"{head}\n{line}"
+            retain = True
+        else:
+            content = f"Searching for Ham Path…\n{line}"
+            retain = False
+        on_update(PatternResult(content=content, retain_image=retain))
+
+    with hampath.progress_scope(emit_search_progress):
+        tour = hampath.find_hamiltonian_path(grid)
+        if not tour:
+            result = _result("No Ham Cycle or Ham Path", grid)
+            if on_update:
+                on_update(result)
+            return result
+
+        gap = hampath.path_end_gap(tour)
+        min_gap = hampath.min_path_end_gap(len(tour), cycle_possible=cycle_possible)
+        already_best = gap is not None and gap <= min_gap
+        result, best = _emit_path(
             on_update, wall_count, grid, tour,
-            cycle_possible=cycle_possible, searching=True, best=is_best,
+            cycle_possible=cycle_possible, searching=not already_best, best=already_best,
+        )
+        if best:
+            return result
+
+        def on_better(new_tour, new_gap, is_best):
+            nonlocal tour
+            tour = new_tour
+            _emit_path(
+                on_update, wall_count, grid, tour,
+                cycle_possible=cycle_possible, searching=True, best=is_best,
+            )
+
+        tour, _gap, best = hampath.improve_path_endpoints(
+            grid,
+            tour,
+            time_limit=None,
+            on_better=on_better,
+            cycle_possible=cycle_possible,
         )
 
-    tour, _gap, best = hampath.improve_path_endpoints(
-        grid,
-        tour,
-        time_limit=None,
-        on_better=on_better,
-        cycle_possible=cycle_possible,
-    )
     result, _ = _emit_path(
         on_update, wall_count, grid, tour,
         cycle_possible=cycle_possible, searching=False, best=best,

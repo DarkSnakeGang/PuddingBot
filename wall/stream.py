@@ -40,6 +40,9 @@ async def send_pattern_message(target, result: PatternResult) -> discord.Message
 
 
 async def edit_pattern_message(message: discord.Message, result: PatternResult) -> None:
+    if result.retain_image:
+        await message.edit(content=_content(result))
+        return
     file = pattern_file(result)
     if file:
         await message.edit(content=_content(result), attachments=[file])
