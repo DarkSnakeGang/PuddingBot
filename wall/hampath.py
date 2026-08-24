@@ -1382,7 +1382,10 @@ def improve_path_endpoints(grid, tour, time_limit=None, on_better=None, cycle_po
     Prefer nearer improvements (current_gap-1, …) before the theoretical
     minimum so a hard gap-1 search cannot block finding gap 3/4.
     Calls on_better(tour, gap, best) on improvements.
-    Returns (tour, gap, best). Timeouts / inconclusive mins never count as proven.
+    Returns (tour, gap, best).
+
+    time_limit None: exhaustively prove or refute every closer gap (no
+    timeout-as-no). A finite limit may stop early; then best is False.
     """
     if not tour:
         return None, None, False
@@ -1445,7 +1448,12 @@ def improve_path_endpoints(grid, tour, time_limit=None, on_better=None, cycle_po
         pairs.sort(key=lambda p: _degree(p[0], free) + _degree(p[1], free))
 
     def try_gap(d):
-        """Return 'found', 'impossible', 'inconclusive', or 'timeout'."""
+        """Return 'found', 'impossible', 'inconclusive', or 'timeout'.
+
+        Forced-fill is a finder only: a clean miss does not prove a pair is
+        impossible. With no deadline, every rejected pair is exhaustively
+        DFS-checked; only then is the gap marked impossible.
+        """
         nonlocal tour, best_d
         pairs = by_dist.get(d) or []
         if not pairs:
@@ -1456,6 +1464,7 @@ def improve_path_endpoints(grid, tour, time_limit=None, on_better=None, cycle_po
         for a, b in pairs:
             if timed_out():
                 return "timeout"
+            # Short forced-fill probe as a fast finder (never a prover).
             prune_until = time.perf_counter() + 0.08
             if deadline:
                 prune_until = min(prune_until, deadline)
@@ -1466,25 +1475,36 @@ def improve_path_endpoints(grid, tour, time_limit=None, on_better=None, cycle_po
                 if on_better is not None:
                     on_better(tour, best_d, best_d <= min_d)
                 return "found"
-            if unsure:
+            # No deadline: exhaustively check every miss. With a deadline,
+            # only re-check pairs that timed out mid-probe (WallResearch).
+            if (not deadline) or unsure:
                 leftover.append((a, b))
-        budgets = (16_000, 64_000, 250_000, 0)
-        if len(leftover) < 80:
+        if not leftover:
+            return "impossible"
+        # Unlimited DFS when proving; capped then unlimited when timed.
+        budgets = (0,) if not deadline else (16_000, 64_000, 250_000, 0)
+        if deadline and len(leftover) < 80:
             budgets = (4_000,) + budgets
         for node_limit in budgets:
             if timed_out():
                 return "timeout"
             if not leftover:
                 break
+            total = len(leftover)
             if prog is not None:
                 cap = "unlimited" if not node_limit else f"{node_limit:,} cap"
                 prog.set_phase(
-                    f"closest ends gap {d} ({cap}, {len(leftover)} pairs)"
+                    f"closest ends gap {d} ({cap}, {total} pairs)"
                 )
             still = []
-            for a, b in leftover:
+            for i, (a, b) in enumerate(leftover):
                 if timed_out():
                     return "timeout"
+                if prog is not None and (i == 0 or (i + 1) % 5 == 0 or i + 1 == total):
+                    cap = "unlimited" if not node_limit else f"{node_limit:,} cap"
+                    prog.set_phase(
+                        f"closest ends gap {d} ({cap}, pair {i + 1}/{total})"
+                    )
                 hit = False
                 for start, end in ((a, b), (b, a)):
                     if len(deg1) == 1 and start != deg1[0]:
