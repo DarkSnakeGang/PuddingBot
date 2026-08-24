@@ -47,6 +47,16 @@ else
 fi
 
 echo "Starting Discord bot (update restart loop enabled)..."
+
+install_native_dfs() {
+    if [ -f /app/native/setup.py ]; then
+        pip3 install --no-cache-dir -q /app/native \
+            || echo "Warning: native DFS install failed; using Python fallback"
+    fi
+}
+
+install_native_dfs
+
 BOT_EXIT_CODE=0
 while true; do
     # Ensure configured model exists (covers /update model changes without full container rebuild)
@@ -59,6 +69,7 @@ while true; do
     BOT_EXIT_CODE=$?
     if [ "$BOT_EXIT_CODE" -eq "$RESTART_EXIT_CODE" ]; then
         echo "Update restart requested, reloading bot..."
+        install_native_dfs
         continue
     fi
     echo "Discord bot stopped with code $BOT_EXIT_CODE. Retrying in 5s..."

@@ -74,10 +74,15 @@ The bot now uses Ollama for AI responses instead of external APIs:
   chat/          Message replies and Ollama AI
   cogs/          Discord slash/context command extensions
   wall/          Wall All solver, renderer, Discord stream updates
+  native/        C Warnsdorff DFS extension (warnsdorff_c)
   tests/         Local smoke tests
   scripts/       Docker helper scripts
   assets/        Memes, fonts, GIFs
 ```
+
+Wall All path search uses the native C DFS when `warnsdorff_c` is installed
+(built in Docker; falls back to pure Python otherwise). Force Python with
+`HAMPATH_DFS=python`.
 
 ## Troubleshooting
 

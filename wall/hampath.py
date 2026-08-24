@@ -13,6 +13,7 @@ Prunes, in order:
 """
 
 import collections
+import os
 import threading
 import time
 
@@ -297,7 +298,7 @@ def _color_count(rem):
     return black
 
 
-def _warnsdorff_dfs(
+def _warnsdorff_dfs_python(
     head,
     rem,
     nleft,
@@ -307,6 +308,7 @@ def _warnsdorff_dfs(
     node_limit=0,
     path=None,
     deadline=0.0,
+    memo=None,
 ):
     """Exhaustive ham path from head covering rem. Neighbors in Warnsdorff order.
 
@@ -323,6 +325,10 @@ def _warnsdorff_dfs(
         return False
 
     while True:
+        if memo is not None:
+            key = (head, rem, required_end)
+            if memo.get(key) is False:
+                return fail()
         if deadline and time.perf_counter() > deadline:
             return fail()
         if node_limit:
@@ -402,7 +408,7 @@ def _warnsdorff_dfs(
         for n in nbrs:
             if _reachable_mask(n, open_cells) != open_cells:
                 continue
-            if _warnsdorff_dfs(
+            if _warnsdorff_dfs_python(
                 n,
                 open_cells,
                 n_open,
@@ -412,10 +418,80 @@ def _warnsdorff_dfs(
                 node_limit,
                 path,
                 deadline,
+                memo,
             ):
                 return True
+        if memo is not None:
+            memo[(head, rem, required_end)] = False
         return fail()
 
+
+try:
+    import warnsdorff_c as _warnsdorff_c_mod
+except ImportError:
+    _warnsdorff_c_mod = None
+
+
+def dfs_backend_name():
+    """Active DFS kernel: 'c' or 'python'."""
+    if os.environ.get("HAMPATH_DFS", "").strip().lower() == "python":
+        return "python"
+    return "c" if _warnsdorff_c_mod is not None else "python"
+
+
+def _warnsdorff_dfs(
+    head,
+    rem,
+    nleft,
+    black,
+    required_end=None,
+    nodes=None,
+    node_limit=0,
+    path=None,
+    deadline=0.0,
+    memo=None,
+):
+    """Warnsdorff DFS — prefers native C when installed; Python otherwise.
+
+    Deadline-aware searches always use Python (C kernel has no deadline).
+    Set HAMPATH_DFS=python to force the pure-Python kernel.
+    """
+    use_c = (
+        _warnsdorff_c_mod is not None
+        and not deadline
+        and os.environ.get("HAMPATH_DFS", "").strip().lower() != "python"
+    )
+    if not use_c:
+        return _warnsdorff_dfs_python(
+            head,
+            rem,
+            nleft,
+            black,
+            required_end,
+            nodes,
+            node_limit,
+            path,
+            deadline,
+            memo,
+        )
+
+    want_path = path is not None
+    result = _warnsdorff_c_mod.dfs(
+        head,
+        rem,
+        nleft,
+        black,
+        required_end,
+        node_limit=node_limit or 0,
+        want_path=want_path,
+        use_memo=memo is not None,
+    )
+    if want_path:
+        if result is None:
+            return False
+        path.extend(result)
+        return True
+    return bool(result)
 
 def _path_starts(free, nfree, deg1):
     if deg1:
@@ -461,12 +537,13 @@ def _exhaustive_ham_path(grid, node_limit=0, budgets=None, want_path=False, dead
         if prog is not None:
             prog.set_phase(f"path DFS ({label})")
         nodes = [0] if budget else None
+        memo = {} if not budget else None
         for s in starts:
             if budget:
                 nodes[0] = 0
             found = [] if want_path else None
             if _warnsdorff_dfs(
-                s, free, nfree, black, required_end, nodes, budget, found, deadline
+                s, free, nfree, black, required_end, nodes, budget, found, deadline, memo
             ):
                 if want_path:
                     return [divmod(i, WIDTH) for i in found]
@@ -1271,6 +1348,7 @@ def _path_between(grid, start, end, node_limit, deadline):
         return [divmod(start, WIDTH)] if nfree == 1 else None
     path = []
     nodes = [0] if node_limit else None
+    memo = {} if not node_limit else None
     if _warnsdorff_dfs(
         start,
         free,
@@ -1281,6 +1359,7 @@ def _path_between(grid, start, end, node_limit, deadline):
         node_limit,
         path,
         deadline,
+        memo,
     ):
         tour = [divmod(i, WIDTH) for i in path]
         return tour if verify_path(grid, tour) else None

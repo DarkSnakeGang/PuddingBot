@@ -15,4 +15,8 @@ ENV/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
+build/
+*.so
+*.pyd
+native/build/
 api_key

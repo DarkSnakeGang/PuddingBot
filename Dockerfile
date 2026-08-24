@@ -10,7 +10,7 @@ ENV GIT_BRANCH=main
 ENV APP_DIR=/app
 ENV OLLAMA_MODEL=qwen3:0.6b
 
-# Install system dependencies
+# Install system dependencies (build-essential for native Warnsdorff DFS)
 RUN apt-get update && apt-get install -y \
     curl \
     wget \
@@ -20,6 +20,8 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-venv \
+    python3-dev \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Ollama
@@ -31,8 +33,9 @@ WORKDIR /app
 # Copy the current directory contents into the container at /app
 COPY . /app
 
-# Install Python dependencies
-RUN pip3 install --no-cache-dir -r requirements.txt
+# Install Python dependencies + native C Warnsdorff DFS
+RUN pip3 install --no-cache-dir -r requirements.txt \
+    && pip3 install --no-cache-dir /app/native
 
 # Startup script handles git init, Ollama, and bot restart loop
 RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
