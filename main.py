@@ -455,6 +455,7 @@ async def load_extensions():
         'cogs.admin',
         'cogs.fastsnakestats',
         'cogs.image_tools',
+        'cogs.mkv_convert',
         'cogs.repo_watcher',
         'cogs.wall_commands',
     ):

@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y \
     python3-venv \
     python3-dev \
     build-essential \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Ollama
