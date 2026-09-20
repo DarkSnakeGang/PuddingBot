@@ -6,6 +6,7 @@ import asyncio
 import os
 import shutil
 import tempfile
+from functools import lru_cache
 from typing import Optional
 
 import discord
@@ -39,6 +40,22 @@ def _upload_limit_for(guild: Optional[discord.Guild]) -> int:
     return limits.get(int(getattr(guild, "premium_tier", 0) or 0), DEFAULT_UPLOAD_LIMIT)
 
 
+@lru_cache(maxsize=1)
+def _ffmpeg_bin() -> str:
+    """System ffmpeg if present, else the pip-bundled imageio-ffmpeg binary."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    try:
+        import imageio_ffmpeg
+    except ImportError as error:
+        raise RuntimeError(
+            "ffmpeg is not available. Install the imageio-ffmpeg package "
+            "(comes in via /update + requirements.txt)."
+        ) from error
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
 async def _run_ffmpeg(args: list[str]) -> tuple[int, str]:
     proc = await asyncio.create_subprocess_exec(
         *args,
@@ -59,11 +76,10 @@ async def _run_ffmpeg(args: list[str]) -> tuple[int, str]:
 
 async def convert_mkv_to_mp4(src_path: str, dst_path: str) -> None:
     """Remux when possible; otherwise re-encode to H.264/AAC."""
-    if not shutil.which("ffmpeg"):
-        raise RuntimeError("ffmpeg is not installed")
+    ffmpeg = _ffmpeg_bin()
 
     copy_args = [
-        "ffmpeg",
+        ffmpeg,
         "-y",
         "-hide_banner",
         "-loglevel",
@@ -81,7 +97,7 @@ async def convert_mkv_to_mp4(src_path: str, dst_path: str) -> None:
         return
 
     reencode_args = [
-        "ffmpeg",
+        ffmpeg,
         "-y",
         "-hide_banner",
         "-loglevel",
