@@ -14,6 +14,7 @@ import asyncio
 import wall
 import wall.stream as wall_stream
 from wall import PatternResult
+from cogs.dm_media import message_has_http_url
 
 # Load Token
 load_dotenv()
@@ -359,7 +360,10 @@ async def on_message(message: Message) -> None:
             print(f"Failed to send bad rng meme: {e}")
 
     if not (user_message.lower()[:3] == 'gif' and in_poi):
-        await send_message(message, user_message, message.author.id)
+        # DM links are handled by cogs.dm_media — skip AI chatter for those
+        is_dm = message.guild is None
+        if not (is_dm and message_has_http_url(user_message)):
+            await send_message(message, user_message, message.author.id)
 
     await bot.process_commands(message)
 
@@ -453,6 +457,7 @@ async def load_extensions():
     """Load all cogs"""
     for extension in (
         'cogs.admin',
+        'cogs.dm_media',
         'cogs.fastsnakestats',
         'cogs.image_tools',
         'cogs.mkv_convert',
