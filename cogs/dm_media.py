@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-import asyncio
+import hashlib
 import io
 import os
 import re
 from html.parser import HTMLParser
-from typing import List, Optional, Set, Tuple
-from urllib.parse import urljoin, urlparse
+from typing import Dict, List, Optional, Set, Tuple
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 import aiohttp
 import discord
 from discord.ext import commands
+from PIL import Image, UnidentifiedImageError
 
 URL_RE = re.compile(r"https?://[^\s<>)\]]+", re.IGNORECASE)
 
@@ -56,6 +57,32 @@ MAX_MEDIA_ITEMS = 25
 MAX_PAGES = 1
 FETCH_TIMEOUT = aiohttp.ClientTimeout(total=45)
 FILES_PER_MESSAGE = 10
+
+# Query keys that usually mean a resized/thumbnail CDN variant
+_SIZE_QUERY_KEYS = {
+    "w",
+    "h",
+    "width",
+    "height",
+    "size",
+    "resize",
+    "fit",
+    "crop",
+    "quality",
+    "q",
+    "w_",
+    "h_",
+    "maxwidth",
+    "maxheight",
+    "imgmax",
+}
+_THUMB_PATH_RE = re.compile(
+    r"/(?:thumbs?|thumbnails?|small|tiny|icons?|resized?)/", re.IGNORECASE
+)
+_SIZE_SUFFIX_RE = re.compile(
+    r"[-_](?:\d{2,4}x\d{2,4}|\d{2,4}w|thumb|small|tiny|medium|icon|preview)(?=\.|$)",
+    re.IGNORECASE,
+)
 
 
 def message_has_http_url(content: str) -> bool:
@@ -109,6 +136,80 @@ def _filename_for(url: str, content_type: str, index: int) -> str:
         }
         name += ext_map.get(ct, ".bin")
     return name
+
+
+def _media_family_key(url: str) -> str:
+    """Collapse thumbnail/full CDN variants of the same asset to one key."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return url.lower()
+    path = parsed.path or ""
+    path = _THUMB_PATH_RE.sub("/", path)
+    root, ext = os.path.splitext(path)
+    root = _SIZE_SUFFIX_RE.sub("", root)
+    path = root + ext.lower()
+    query_pairs = [
+        (k, v)
+        for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if k.lower() not in _SIZE_QUERY_KEYS
+    ]
+    query = urlencode(query_pairs)
+    return urlunparse(
+        (parsed.scheme.lower(), parsed.netloc.lower(), path, "", query, "")
+    )
+
+
+def _image_pixel_area(blob: bytes) -> Optional[int]:
+    try:
+        with Image.open(io.BytesIO(blob)) as img:
+            width, height = img.size
+            return int(width) * int(height)
+    except (UnidentifiedImageError, OSError, ValueError):
+        return None
+
+
+def prefer_full_over_thumbnails(
+    items: List[Tuple[str, bytes, str]],
+) -> List[Tuple[str, bytes, str]]:
+    """Drop small/thumbnail variants when a larger version of the same image exists.
+
+    Groups by URL family (size query params / thumb path / NxN suffixes stripped).
+    Within a family, keeps the largest image by pixel area (then by bytes).
+    Exact byte duplicates are also collapsed. Videos are kept as-is.
+    """
+    if len(items) <= 1:
+        return items
+
+    # Exact payload dedupe (same file, different URL)
+    by_hash: Dict[str, Tuple[int, str, bytes, str]] = {}
+    hash_order: List[str] = []
+    for index, (url, blob, ct) in enumerate(items):
+        digest = hashlib.sha1(blob).hexdigest()
+        if digest not in by_hash:
+            by_hash[digest] = (index, url, blob, ct)
+            hash_order.append(digest)
+    deduped = [by_hash[d][1:] for d in hash_order]
+
+    best_by_family: Dict[str, Tuple[int, int, int, str, bytes, str]] = {}
+    # score_area, byte_len, original_index, url, blob, ct
+    for index, (url, blob, ct) in enumerate(deduped):
+        is_image = (ct or "").lower().startswith("image/")
+        if is_image:
+            family = _media_family_key(url)
+            area = _image_pixel_area(blob)
+            score = area if area is not None else len(blob)
+        else:
+            # Don't collapse videos/other against images
+            family = f"unique:{index}:{url}"
+            score = len(blob)
+        candidate = (score, len(blob), index, url, blob, ct)
+        current = best_by_family.get(family)
+        if current is None or candidate[:2] > current[:2]:
+            best_by_family[family] = candidate
+
+    winners = sorted(best_by_family.values(), key=lambda row: row[2])
+    return [(url, blob, ct) for _score, _nbytes, _idx, url, blob, ct in winners]
 
 
 class _MediaHTMLParser(HTMLParser):
@@ -245,11 +346,12 @@ async def collect_media_from_url(
         return []
 
     html = data.decode("utf-8", errors="replace")
+    # Fetch extra candidates so thumbnail+full pairs can be resolved later
     candidates = extract_media_urls_from_html(page_url, html)[: MAX_MEDIA_ITEMS * 3]
 
     results: List[Tuple[str, bytes, str]] = []
     for media_url in candidates:
-        if len(results) >= MAX_MEDIA_ITEMS:
+        if len(results) >= MAX_MEDIA_ITEMS * 3:
             break
         try:
             media_bytes, media_ct = await _fetch_bytes(
@@ -262,7 +364,7 @@ async def collect_media_from_url(
         if media_ct.startswith("text/"):
             continue
         results.append((media_url, media_bytes, media_ct))
-    return results
+    return prefer_full_over_thumbnails(results)[:MAX_MEDIA_ITEMS]
 
 
 class DmMedia(commands.Cog):
@@ -314,6 +416,12 @@ class DmMedia(commands.Cog):
                     if len(all_media) >= MAX_MEDIA_ITEMS:
                         break
 
+            if not all_media:
+                if status:
+                    await status.edit(content="No images or videos found on that page.")
+                return
+
+            all_media = prefer_full_over_thumbnails(all_media)
             if not all_media:
                 if status:
                     await status.edit(content="No images or videos found on that page.")
