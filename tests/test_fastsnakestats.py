@@ -94,13 +94,28 @@ async def test_github_cache():
     return True
 
 async def test_chronicle_and_ce():
-    """Test Chronicle + Chess CE mode wiring."""
+    """Test Chronicle + RemixMod CE mode wiring."""
     print("\nTesting Chronicle + CE modes...")
     print("=" * 40)
 
-    assert "Chess" in dm.GAMEMODES and "Burger" in dm.GAMEMODES
-    assert dm.allows_high_score("1 Apple", "Chess")
-    print("✅ Chess/Burger modes registered")
+    ce_modes = ("Chess", "Candy", "Burger", "Cat", "Mexico", "Bomb", "Temp Wall", "Ghost")
+    for mode in ce_modes:
+        assert mode in dm.GAMEMODES, f"missing CE mode {mode}"
+        assert dm.allows_high_score("1 Apple", mode), f"HS missing for {mode}"
+        assert dm.is_ce_level_highscore_mode(mode)
+        assert dm.is_valid_category("1 Apple", "Normal", "Standard", mode, "25 Apples")
+        assert dm.is_valid_category("1 Apple", "Normal", "Standard", mode, "High Score")
+    assert dm.score_category(
+        dm.get_settings_key("1 Apple", "Normal", "Standard", "Cat", "25 Apples")
+    )["tier"] == "Free"
+    assert dm.score_category(
+        dm.get_settings_key("1 Apple", "Normal", "Standard", "Candy", "25 Apples")
+    )["tier"] == "Warmup"
+    assert dm.GAMEMODES["Bomb"]["id"] == "trophy_bomb_mode"
+    assert dm.APPLE_AMOUNTS["Bomb"]["id"] == "count_05"
+    assert dm.emoji_names_for_setting("Bomb", "trophy_bomb_mode")[0] == "bomb_mode"
+    assert dm.emoji_names_for_setting("Bomb", "count_05")[0] == "bomb_apple_count"
+    print("✅ All 8 CE RemixMod modes registered")
 
     chronicle = await github_cache_fetcher.fetch_chronicle()
     if not chronicle:

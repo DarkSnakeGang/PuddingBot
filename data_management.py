@@ -57,9 +57,47 @@ GAMEMODES = {
     "Gate": {"visible": True, "icon": "https://i.ibb.co/1tp8JqBM/trophy-19-png.png", "id": "trophy_20"},
     "Bridge": {"visible": True, "icon": "https://i.ibb.co/Kj7tYtM7/trophy-20.png", "id": "trophy_22"},
     "Peaceful": {"visible": True, "icon": "https://i.ibb.co/jvrCYD8r/trophy-17-png.png", "id": "trophy_21"},
-    # Category Extensions level modes (FastSnakeStats CE Mix)
-    "Chess": {"visible": True, "icon": "https://i.postimg.cc/ZqK0CB95/bn.png", "id": "trophy_chess"},
-    "Burger": {"visible": True, "icon": "https://i.postimg.cc/13m2Cr16/burger.png", "id": "trophy_burger"},
+    # Category Extensions level modes (RemixMod — FastSnakeStats CE)
+    "Chess": {
+        "visible": True,
+        "icon": os.path.join(os.path.dirname(__file__), "assets", "ce", "chess.png"),
+        "id": "trophy_chess",
+    },
+    "Candy": {
+        "visible": True,
+        "icon": os.path.join(os.path.dirname(__file__), "assets", "ce", "candy.png"),
+        "id": "trophy_candy",
+    },
+    "Burger": {
+        "visible": True,
+        "icon": os.path.join(os.path.dirname(__file__), "assets", "ce", "burger.png"),
+        "id": "trophy_burger",
+    },
+    "Cat": {
+        "visible": True,
+        "icon": os.path.join(os.path.dirname(__file__), "assets", "ce", "cat.png"),
+        "id": "trophy_cat",
+    },
+    "Mexico": {
+        "visible": True,
+        "icon": os.path.join(os.path.dirname(__file__), "assets", "ce", "mexico.png"),
+        "id": "trophy_mexico",
+    },
+    "Bomb": {
+        "visible": True,
+        "icon": os.path.join(os.path.dirname(__file__), "assets", "ce", "bomb.png"),
+        "id": "trophy_bomb_mode",
+    },
+    "Temp Wall": {
+        "visible": True,
+        "icon": os.path.join(os.path.dirname(__file__), "assets", "ce", "temp-wall.png"),
+        "id": "trophy_temp_wall",
+    },
+    "Ghost": {
+        "visible": True,
+        "icon": os.path.join(os.path.dirname(__file__), "assets", "ce", "ghost.png"),
+        "id": "trophy_ghost",
+    },
 }
 
 RUN_MODES = {
@@ -115,7 +153,18 @@ SETTING_EMOJI_NAMES: Dict[str, str] = {
     "Bridge": "bridge_mode",
     "Peaceful": "peaceful_mode",
     "Chess": "chess_mode",
+    "Candy": "candy_mode",
     "Burger": "burger_mode",
+    "Cat": "cat_mode",
+    "Mexico": "mexico_mode",
+    "Temp Wall": "temp_wall_mode",
+    "Ghost": "ghost_mode",
+}
+
+# When two settings share a label (Bomb apple count vs Bomb CE mode), resolve by id
+SETTING_EMOJI_BY_ID: Dict[str, tuple] = {
+    "count_05": ("bomb_apple_count",),
+    "trophy_bomb_mode": ("bomb_mode", "trophy_bomb_mode"),
 }
 
 # Alternate emoji names to try if the primary is missing
@@ -123,7 +172,12 @@ SETTING_EMOJI_NAME_ALIASES: Dict[str, tuple] = {
     "Yin Yang": ("yin_yang_mode", "yinyang_mode", "yin_yang", "yy_mode"),
     "Slow": ("speed_02", "slow_speed"),
     "Chess": ("chess_mode", "trophy_chess", "bn"),
+    "Candy": ("candy_mode", "trophy_candy"),
     "Burger": ("burger_mode", "trophy_burger"),
+    "Cat": ("cat_mode", "trophy_cat"),
+    "Mexico": ("mexico_mode", "trophy_mexico"),
+    "Temp Wall": ("temp_wall_mode", "trophy_temp_wall", "tempwall_mode"),
+    "Ghost": ("ghost_mode", "trophy_ghost"),
 }
 
 
@@ -156,9 +210,14 @@ def save_emoji_map(mapping: Dict[str, str]) -> None:
         print(f"Could not write emoji map: {e}")
 
 
-def emoji_names_for_setting(setting_name: str) -> list:
-    """Candidate guild emoji names for a setting label."""
+def emoji_names_for_setting(setting_name: str, setting_id: Optional[str] = None) -> list:
+    """Candidate guild emoji names for a setting label (or setting id when ambiguous)."""
     names = []
+    if setting_id and setting_id in SETTING_EMOJI_BY_ID:
+        for name in SETTING_EMOJI_BY_ID[setting_id]:
+            if name not in names:
+                names.append(name)
+        return names
     primary = SETTING_EMOJI_NAMES.get(setting_name)
     if primary:
         names.append(primary)
@@ -182,7 +241,7 @@ def refresh_emoji_map_from_guild(guild) -> int:
             setting_id = meta.get("id")
             if not setting_id:
                 continue
-            for emoji_name in emoji_names_for_setting(setting_name):
+            for emoji_name in emoji_names_for_setting(setting_name, setting_id):
                 emoji = by_name.get(emoji_name)
                 if emoji is not None:
                     mapping[setting_id] = str(emoji)
@@ -367,7 +426,8 @@ def get_ordered_run_modes() -> list:
 # Modes that have a High Score leaderboard (main snake_game + CE level modes)
 HIGHSCORE_MODES = frozenset({
     "Wall", "Portal", "Key", "Sokoban", "Poison", "Minesweeper",
-    "Statue", "Shield", "Hotdog", "Gate", "Bridge", "Chess", "Burger",
+    "Statue", "Shield", "Hotdog", "Gate", "Bridge",
+    "Chess", "Candy", "Burger", "Cat", "Mexico", "Bomb", "Temp Wall", "Ghost",
 })
 
 # Modes whose Tally High Score lives on snake_game_ce (FastSnakeStats tally-boards.js)
@@ -376,8 +436,10 @@ TALLY_CE_HIGHSCORE_MODES = frozenset({
     "Dimension", "Light", "Arrow", "Magnet",
 })
 
-# CE level modes (Chess/Burger) — full HS columns like typical HS modes
-CE_LEVEL_HIGHSCORE_MODES = frozenset({"Chess", "Burger"})
+# CE level modes (RemixMod) — full timed + HS matrix on snake_game_ce
+CE_LEVEL_HIGHSCORE_MODES = frozenset({
+    "Chess", "Candy", "Burger", "Cat", "Mexico", "Bomb", "Temp Wall", "Ghost",
+})
 
 DIFFICULTY_TIERS = [
     "Free", "Warmup", "Easy", "Medium", "Hard", "Mythic", "Lottery", "Inhuman",
@@ -385,7 +447,9 @@ DIFFICULTY_TIERS = [
 
 MODE_BASE_TIER = {
     "Peaceful": "Free",
+    "Cat": "Free",
     "Classic": "Warmup",
+    "Candy": "Warmup",
     "Cheese": "Warmup",
     "Borderless": "Warmup",
     "Winged": "Warmup",
@@ -396,6 +460,8 @@ MODE_BASE_TIER = {
     "Arrow": "Easy",
     "Light": "Easy",
     "Hotdog": "Easy",
+    "Temp Wall": "Easy",
+    "Ghost": "Easy",
     "Wall": "Medium",
     "Portal": "Medium",
     "Twin": "Medium",
@@ -408,19 +474,21 @@ MODE_BASE_TIER = {
     "Bridge": "Medium",
     "Chess": "Medium",
     "Burger": "Medium",
+    "Mexico": "Medium",
+    "Bomb": "Medium",
 }
 
 _COUNT_MORE_EASIER = ["Bomb", "10 Apples", "5 Apples", "Dice", "3 Apples", "1 Apple", "Tally"]
 _COUNT_LESS_EASIER = ["Tally", "1 Apple", "3 Apples", "Dice", "5 Apples", "10 Apples", "Bomb"]
 _COUNT_POISON = ["Tally", "1 Apple", "Dice", "3 Apples", "5 Apples", "10 Apples", "Bomb"]
 _COUNT_LESS_EASIER_MODES = frozenset({
-    "Portal", "Key", "Sokoban", "Minesweeper", "Shield", "Hotdog",
+    "Portal", "Key", "Sokoban", "Minesweeper", "Shield", "Hotdog", "Mexico", "Bomb",
 })
 _APPLE_RUNS = ["25 Apples", "50 Apples", "100 Apples", "All Apples"]
 
 
 def is_high_score_mode(gamemode: str) -> bool:
-    """True if this mode has High Score columns (typical HS + CE Chess/Burger)."""
+    """True if this mode has High Score columns (typical HS + CE RemixMod levels)."""
     return gamemode in HIGHSCORE_MODES
 
 
@@ -430,7 +498,7 @@ def is_tally_ce_highscore_mode(gamemode: str) -> bool:
 
 
 def is_ce_level_highscore_mode(gamemode: str) -> bool:
-    """True for CE level modes (Chess/Burger) with full High Score columns."""
+    """True for CE RemixMod level modes with full High Score columns."""
     return gamemode in CE_LEVEL_HIGHSCORE_MODES
 
 
@@ -486,7 +554,8 @@ def tier_index(name: str) -> int:
 
 
 def _effective_mode_tier(mode: str, size: str, speed: str, run: str, apple: str) -> str:
-    if mode == "Peaceful":
+    # Peaceful / Cat are always Free — no overrides apply
+    if mode in ("Peaceful", "Cat"):
         return "Free"
 
     # Tally starts at Medium before other overrides (FSS analyzer)
@@ -511,13 +580,19 @@ def _effective_mode_tier(mode: str, size: str, speed: str, run: str, apple: str)
         tier = "Mythic"
     elif mode == "Portal" and apple == "Bomb":
         tier = "Inhuman" if speed == "Fast" else "Mythic"
+    elif mode == "Mexico" and apple == "Bomb":
+        # Mexico is Portal-like
+        tier = "Inhuman" if speed == "Fast" else "Mythic"
     elif mode == "Poison" and apple == "Bomb":
         tier = "Inhuman" if speed == "Fast" else "Mythic"
     elif (
-        mode not in ("Borderless", "Classic", "Cheese", "Magnet", "Light", "Yin Yang")
+        mode not in (
+            "Borderless", "Classic", "Candy", "Cheese", "Magnet", "Light", "Yin Yang"
+        )
         and not (mode == "Statue" and apple in ("10 Apples", "Bomb"))
         and not (mode == "Arrow" and apple == "Bomb")
         and not (mode == "Portal" and apple == "Bomb")
+        and not (mode == "Mexico" and apple == "Bomb")
         and not (mode == "Poison" and apple == "Bomb")
         and speed == "Fast"
         and size == "Large"
@@ -526,6 +601,10 @@ def _effective_mode_tier(mode: str, size: str, speed: str, run: str, apple: str)
         tier = "Mythic"
     elif mode == "Portal" and speed == "Fast" and size in ("Standard", "Large"):
         tier = "Hard"
+    elif mode == "Mexico" and speed == "Fast" and size in ("Standard", "Large"):
+        # Mexico is Portal-like — Fast Standard/Large at least Hard
+        if tier_index(tier) < tier_index("Hard"):
+            tier = "Hard"
     elif mode == "Winged" and speed == "Fast":
         tier = "Easy"
 
@@ -538,7 +617,11 @@ def _effective_mode_tier(mode: str, size: str, speed: str, run: str, apple: str)
             tier = "Hard"
 
     if speed == "Slow" and tier == "Mythic":
-        keep = (mode == "Portal" and apple == "Bomb") or (mode == "Poison" and apple == "Bomb")
+        keep = (
+            (mode == "Portal" and apple == "Bomb")
+            or (mode == "Mexico" and apple == "Bomb")
+            or (mode == "Poison" and apple == "Bomb")
+        )
         if not keep:
             tier = "Hard"
 
@@ -547,6 +630,7 @@ def _effective_mode_tier(mode: str, size: str, speed: str, run: str, apple: str)
         or (mode == "Cheese" and run == "50 Apples" and size == "Small")
         or (mode == "Statue" and apple == "1 Apple" and run == "50 Apples" and size == "Small")
         or (mode == "Portal" and apple == "Bomb")
+        or (mode == "Mexico" and apple == "Bomb")
         or (mode == "Poison" and apple == "Bomb")
     )
     if speed == "Slow" and size == "Small" and not slow_small_exception:
