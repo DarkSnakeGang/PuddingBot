@@ -725,6 +725,34 @@ class GitHubCacheFetcher:
             return None
         return data.get('activityHeatmap') or []
 
+    async def get_countries(self) -> Optional[List[Dict]]:
+        """Get country aggregate leaderboard rows from the explorer."""
+        data = await self.fetch_statistics_explorer()
+        if not data:
+            return None
+        return data.get('countries') or []
+
+    async def get_player_countries(self) -> Optional[Dict]:
+        """Get playerId → countryCode map from the explorer."""
+        data = await self.fetch_statistics_explorer()
+        if not data:
+            return None
+        return data.get('playerCountries') or {}
+
+    async def get_country_names(self) -> Optional[Dict]:
+        """Get countryCode → display name map from the explorer."""
+        data = await self.fetch_statistics_explorer()
+        if not data:
+            return None
+        return data.get('countryNames') or {}
+
+    async def get_explorer_meta(self) -> Optional[Dict]:
+        """Get statistics-explorer meta (lastUpdated, dateRange, analyzerVersion)."""
+        data = await self.fetch_statistics_explorer()
+        if not data:
+            return None
+        return data.get('meta') or {}
+
     def _load_local_mastery_challenge(self) -> Optional[Dict]:
         return self._load_local_json(self._local_mastery_challenge_path)
 

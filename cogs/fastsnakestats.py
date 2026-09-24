@@ -11,6 +11,7 @@ from datetime import datetime, date, time, timedelta, timezone
 from github_cache_fetcher import github_cache_fetcher
 import data_management as dm
 from . import wr_watch
+from . import stats_charts
 
 # google-snake channel (snake emoji) — https://discord.com/channels/723093146954760222/723093815786864661
 GOOGLE_SNAKE_CHANNEL_ID = int(os.getenv("GOOGLE_SNAKE_CHANNEL_ID", "723093815786864661"))
@@ -28,6 +29,13 @@ MASTERY_MODE_NO_PEACEFUL = "Excluding Peaceful"
 MASTERY_MODE_GROUPS = (MASTERY_MODE_HS_ONLY, MASTERY_MODE_NO_PEACEFUL)
 # Shared Mode filter on explorer list tabs (FSS STATS_LIST_MODE_GROUPS)
 LIST_MODE_GROUPS = (MASTERY_MODE_HS_ONLY,)
+
+CE_DISPLAY_CHOICES = [
+    app_commands.Choice(name="Off (hide CE)", value="Off"),
+    app_commands.Choice(name="Mix (all modes)", value="Mix"),
+    app_commands.Choice(name="Only CE", value="Only"),
+]
+CE_DISPLAY_DEFAULT = "Off"
 
 
 class FastSnakeStats(commands.Cog):
@@ -205,59 +213,96 @@ class FastSnakeStats(commands.Cog):
             print(f"Error getting player data: {e}")
             return None
     
-    async def get_stats_data(self, date: Optional[str] = None) -> Optional[Dict]:
-        """Get statistics about top record holders"""
+    async def get_stats_data(
+        self,
+        date: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+        game_mode: Optional[str] = None,
+        ce_display: Optional[str] = None,
+        country: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Rankings: Overall% (of selected categories) and Relative% (of sum of counts)."""
         try:
-            # Validate date if provided
             if date and not await github_cache_fetcher.is_date_available(date):
                 return None
-            
-            # Fetch data from GitHub cache
+
             if date:
                 world_records = await github_cache_fetcher.fetch_world_records_for_date(date)
             else:
                 world_records = await github_cache_fetcher.fetch_current_world_records()
-            
+
             if not world_records:
                 return None
-            
-            # Count total runs across all settings
-            total_world_records = 0
-            player_records = {}
-            
-            # Count runs per player
+
+            ce = ce_display or CE_DISPLAY_DEFAULT
+            country_code = await self._resolve_country_code(country) if country else None
+            player_countries = (
+                await github_cache_fetcher.get_player_countries() or {}
+            ) if country_code else {}
+
+            # Untied category universe for Overall%
+            selected_categories = []
             for settings_key, runs in world_records.items():
-                if not runs or len(runs) == 0:
+                if not runs:
                     continue
-                
-                # Count all runs for this settings combination
-                total_world_records += len(runs)
-                
-                # Count runs per player
+                if not self._category_matches_filters(
+                    settings_key,
+                    game_mode=game_mode,
+                    apple_amount=apple_amount,
+                    speed=speed,
+                    size=size,
+                    run_mode=run_mode,
+                    ce_display=ce,
+                ):
+                    continue
+                selected_categories.append(settings_key)
+
+            total_categories = len(selected_categories)
+            if total_categories == 0:
+                return None
+
+            player_records: Dict[str, int] = {}
+            for settings_key in selected_categories:
+                runs = world_records.get(settings_key) or []
                 for run in runs:
-                    if run and dm.get_player_name(run):
-                        player_name = dm.get_player_name(run)
-                        
-                        if player_name not in player_records:
-                            player_records[player_name] = 0
-                        player_records[player_name] += 1
-            
+                    if country_code:
+                        ids = dm.get_player_ids(run)
+                        if not any(
+                            self._player_matches_country(pid, country_code, player_countries)
+                            for pid in ids
+                        ):
+                            continue
+                    name = dm.get_player_name(run)
+                    if not name or name == "Unknown Player":
+                        continue
+                    player_records[name] = player_records.get(name, 0) + 1
+
             if not player_records:
                 return None
-            
-            # Sort by number of records (descending)
-            sorted_by_number = sorted(player_records.items(), key=lambda x: x[1], reverse=True)
-            
-            # Sort by percentage (descending)
-            sorted_by_percentage = sorted(player_records.items(), key=lambda x: (x[1] / total_world_records) * 100, reverse=True)
-            
+
+            sum_counts = sum(player_records.values()) or 1
+            ranked = sorted(player_records.items(), key=lambda x: (-x[1], x[0]))
+            filter_label = self._format_category_filters(
+                game_mode=game_mode,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+                run_mode=run_mode,
+                ce_display=ce,
+                country=country,
+            )
+
             return {
-                'total_world_records': total_world_records,
-                'top_by_number': sorted_by_number,  # All players by number
-                'top_by_percentage': sorted_by_percentage,  # All players by percentage
-                'date': date or await github_cache_fetcher.get_most_recent_date()
+                "total_categories": total_categories,
+                "sum_counts": sum_counts,
+                "ranked": ranked,
+                "date": date or await github_cache_fetcher.get_most_recent_date(),
+                "filter_label": filter_label,
             }
-            
+
         except Exception as e:
             print(f"Error getting stats data: {e}")
             return None
@@ -467,6 +512,8 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[str] = None,
+        country: Optional[str] = None,
         limit: int = 50,
     ) -> Optional[List[Dict]]:
         filters = dict(
@@ -475,12 +522,14 @@ class FastSnakeStats(commands.Cog):
             speed=speed,
             size=size,
             run_mode=run_mode,
+            ce_display=ce_display if ce_display is not None else CE_DISPLAY_DEFAULT,
         )
         items = await github_cache_fetcher.get_longevity(mode)
         if items is None:
             return None
         items = self._filter_category_rows(items, **filters)
         items = self._filter_longevity_tied(items, tied)
+        items = await self._filter_rows_by_country(items, country)
         return items[:limit]
 
     def _format_hold_duration(self, start: str, end: str) -> str:
@@ -989,9 +1038,45 @@ class FastSnakeStats(commands.Cog):
         self, interaction: discord.Interaction, current: str
     ) -> List[app_commands.Choice[str]]:
         """Modes for explorer list filters, including High score modes only."""
-        options = list(LIST_MODE_GROUPS) + dm.get_ordered_gamemodes()
+        ce = CE_DISPLAY_DEFAULT
+        try:
+            ns = getattr(interaction, "namespace", None)
+            if ns is not None and getattr(ns, "ce_display", None):
+                ce = ns.ce_display
+        except Exception:
+            pass
+        modes = dm.filter_modes_for_ce_display(dm.get_ordered_gamemodes(), ce)
+        # When Off, still allow discovering CE by typing (Mix list if needle matches CE)
+        if ce == "Off" and current:
+            needle = current.lower()
+            extra = [
+                m for m in dm.get_ordered_gamemodes()
+                if dm.is_ce_level_mode(m) and needle in m.lower()
+            ]
+            for m in extra:
+                if m not in modes:
+                    modes.append(m)
+        options = list(LIST_MODE_GROUPS) + modes
         return self._filter_setting_choices(options, current)
-    
+
+    async def country_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        names = await github_cache_fetcher.get_country_names() or {}
+        needle = (current or "").lower().strip()
+        choices: List[app_commands.Choice[str]] = []
+        # Prefer display names; value = country code
+        items = sorted(names.items(), key=lambda kv: (kv[1] or kv[0]).lower())
+        for code, name in items:
+            label = name or code
+            hay = f"{label} {code}".lower()
+            if needle and needle not in hay:
+                continue
+            choices.append(app_commands.Choice(name=label[:100], value=code))
+            if len(choices) >= 25:
+                break
+        return choices
+
     def get_random_combination(
         self,
         game_mode: Optional[str] = None,
@@ -1000,8 +1085,9 @@ class FastSnakeStats(commands.Cog):
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
         tier: Optional[str] = None,
+        ce_display: Optional[str] = None,
     ) -> Optional[Dict]:
-        """Pick a random valid category, optionally filtered by settings/tier."""
+        """Pick a random valid category, optionally filtered by settings/tier/CE."""
         pool = dm.filter_valid_categories(
             game_mode=game_mode,
             apple_amount=apple_amount,
@@ -1010,7 +1096,9 @@ class FastSnakeStats(commands.Cog):
             run_mode=run_mode,
             tier=tier,
         )
-        # Hard exclude impossible boards (e.g. 100 Apples on Small)
+        ce = ce_display or CE_DISPLAY_DEFAULT
+        # Explicit CE game_mode still allowed when Off
+        explicit_ce = bool(game_mode and dm.is_ce_level_mode(game_mode))
         filtered_pool = []
         for key in pool:
             parts = dm.parse_category_parts(key)
@@ -1022,15 +1110,13 @@ class FastSnakeStats(commands.Cog):
                 parts["run_mode"],
             ):
                 continue
+            if not explicit_ce and not dm.category_allowed_for_ce_display(key, ce):
+                continue
             filtered_pool.append(key)
-        pool = filtered_pool
-        if not pool:
+        if not filtered_pool:
             return None
-
-        settings_key = random.choice(pool)
+        settings_key = random.choice(filtered_pool)
         parts = dm.parse_category_parts(settings_key)
-        if parts["run_mode"] == "100 Apples" and parts["size"] == "Small":
-            return None
         scored = dm.score_category(settings_key)
         return {
             "settings_key": settings_key,
@@ -1339,44 +1425,52 @@ class FastSnakeStats(commands.Cog):
         return embed
 
     def create_stats_embed(self, stats_data: Dict, page: int = 0) -> discord.Embed:
-        """Create a rich embed for stats display with pagination"""
+        """Create a rich embed for rankings (Overall% + Relative%)."""
+        filter_label = stats_data.get("filter_label") or ""
+        title = "📊 Rankings — Top Record Holders"
+        if filter_label:
+            title += f" — {filter_label}"
         embed = discord.Embed(
-            title="📊 Top Record Holders",
-            color=0xff9900,  # Orange for statistics
+            title=title,
+            color=0xff9900,
             timestamp=datetime.now()
         )
-        
-        # Add top by percentage with pagination
+
         players_per_page = 10
+        ranked = stats_data.get("ranked") or []
         start_idx = page * players_per_page
         end_idx = start_idx + players_per_page
-        page_players = stats_data['top_by_percentage'][start_idx:end_idx]
-        
-        top_by_percentage_text = ""
+        page_players = ranked[start_idx:end_idx]
+        total_cats = stats_data.get("total_categories") or 1
+        sum_counts = stats_data.get("sum_counts") or 1
+
+        lines = []
         for i, (player, count) in enumerate(page_players, start_idx + 1):
-            percentage = (count / stats_data['total_world_records']) * 100
-            top_by_percentage_text += f"{i}. **{player}** - **{count}** records • {percentage:.1f}%\n"
-        
-        if not top_by_percentage_text:
-            top_by_percentage_text = "No more players to show."
-        
+            overall = (count / total_cats) * 100
+            relative = (count / sum_counts) * 100
+            lines.append(
+                f"{i}. **{player}** — **{count}** · "
+                f"Overall {overall:.1f}% · Relative {relative:.1f}%"
+            )
+
         embed.add_field(
             name="🏆 Most Records",
-            value=top_by_percentage_text,
+            value="\n".join(lines) if lines else "No more players to show.",
             inline=False
         )
-        
-        # Add total world records at the bottom
         embed.add_field(
-            name="📈 Total World Records",
-            value=str(stats_data['total_world_records']),
+            name="📈 Category Universe",
+            value=(
+                f"**{total_cats}** categories · "
+                f"**{sum_counts}** tied holds counted for Relative%"
+            ),
             inline=False
         )
-        
-        # Add footer with page info
-        total_pages = (len(stats_data['top_by_percentage']) + players_per_page - 1) // players_per_page
-        embed.set_footer(text=f"Data from FastSnakeStats • {stats_data['date']} • Page {page + 1}/{total_pages}")
-        
+
+        total_pages = max(1, (len(ranked) + players_per_page - 1) // players_per_page)
+        embed.set_footer(
+            text=f"Data from FastSnakeStats • {stats_data['date']} • Page {page + 1}/{total_pages}"
+        )
         return embed
     
     def create_weekly_report_embed(self, report_data: Dict, page: int = 0) -> discord.Embed:
@@ -1510,9 +1604,14 @@ class FastSnakeStats(commands.Cog):
         return dm.format_category_key(settings_key)
 
     async def get_leaderboards_data(
-        self, apple_amount: str, speed: str, size: str, date: Optional[str] = None
+        self,
+        apple_amount: str,
+        speed: str,
+        size: str,
+        date: Optional[str] = None,
+        ce_display: Optional[str] = None,
     ) -> Optional[Dict]:
-        """Build full WR table for fixed apple/speed/size across all modes."""
+        """Build full WR table for fixed apple/speed/size across modes (CE filtered)."""
         try:
             if apple_amount not in dm.APPLE_AMOUNTS or speed not in dm.SPEEDS or size not in dm.SIZES:
                 return None
@@ -1527,6 +1626,8 @@ class FastSnakeStats(commands.Cog):
             if not world_records:
                 return None
 
+            ce = ce_display or CE_DISPLAY_DEFAULT
+            allowed_modes = set(dm.filter_modes_for_ce_display(dm.get_ordered_gamemodes(), ce))
             prefix = f"{apple_amount}|{speed}|{size}|"
             mode_order = {name: i for i, name in enumerate(dm.get_ordered_gamemodes())}
             run_order = {name: i for i, name in enumerate(dm.get_ordered_run_modes())}
@@ -1539,6 +1640,8 @@ class FastSnakeStats(commands.Cog):
                 if len(parts) != 5:
                     continue
                 gamemode, run_mode = parts[3], parts[4]
+                if gamemode not in allowed_modes:
+                    continue
                 best = runs[0]
                 time_str = dm.get_run_time(best)
                 rows.append({
@@ -1562,6 +1665,7 @@ class FastSnakeStats(commands.Cog):
                 'apple_amount': apple_amount,
                 'speed': speed,
                 'size': size,
+                'ce_display': ce,
                 'rows': rows,
                 'date': date or await github_cache_fetcher.get_most_recent_date(),
             }
@@ -1717,6 +1821,7 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[str] = None,
     ) -> bool:
         parts = self._parse_category_parts(settings_key)
         if not parts:
@@ -1742,6 +1847,12 @@ class FastSnakeStats(commands.Cog):
                 return False
         elif run_mode and parts['run_mode'] != run_mode:
             return False
+        # Explicit CE game_mode still allowed when ce_display=Off
+        ce = ce_display if ce_display is not None else CE_DISPLAY_DEFAULT
+        if game_mode and dm.is_ce_level_mode(game_mode):
+            pass
+        elif not dm.category_allowed_for_ce_display(settings_key, ce):
+            return False
         return True
 
     def _format_category_filters(
@@ -1754,8 +1865,14 @@ class FastSnakeStats(commands.Cog):
         tied: Optional[str] = None,
         show: Optional[str] = None,
         holds: Optional[str] = None,
+        ce_display: Optional[str] = None,
+        country: Optional[str] = None,
     ) -> str:
         bits = [v for v in (game_mode, apple_amount, speed, size, run_mode) if v]
+        if ce_display and ce_display != "Mix":
+            bits.append(f"CE:{ce_display}")
+        if country:
+            bits.append(f"country:{country}")
         if tied and tied != "all":
             bits.append(f"{tied} only")
         if show and show != "all":
@@ -1771,8 +1888,12 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[str] = None,
+        country: Optional[str] = None,
     ) -> bool:
-        return any((game_mode, apple_amount, speed, size, run_mode))
+        # ce_display defaults to Off which still filters — treat non-Mix as a filter
+        ce = ce_display if ce_display is not None else CE_DISPLAY_DEFAULT
+        return any((game_mode, apple_amount, speed, size, run_mode, country)) or ce != "Mix"
 
     def _filter_category_rows(
         self,
@@ -1782,9 +1903,9 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[str] = None,
     ) -> List[Dict]:
-        if not self._any_category_filters(game_mode, apple_amount, speed, size, run_mode):
-            return items
+        ce = ce_display if ce_display is not None else CE_DISPLAY_DEFAULT
         return [
             item for item in items
             if self._category_matches_filters(
@@ -1794,8 +1915,86 @@ class FastSnakeStats(commands.Cog):
                 speed=speed,
                 size=size,
                 run_mode=run_mode,
+                ce_display=ce,
             )
         ]
+
+    def _player_matches_country(
+        self, player_id: Optional[str], country_code: str, player_countries: Dict
+    ) -> bool:
+        if not player_id or not country_code:
+            return False
+        code = (player_countries.get(str(player_id)) or "").lower()
+        want = country_code.lower()
+        if not code:
+            return False
+        return code == want or code.startswith(want + "/") or want.startswith(code + "/")
+
+    async def _resolve_country_code(self, country: Optional[str]) -> Optional[str]:
+        if not country:
+            return None
+        raw = country.strip()
+        if not raw:
+            return None
+        names = await github_cache_fetcher.get_country_names() or {}
+        lower = raw.lower()
+        # Exact code
+        for code in names:
+            if code.lower() == lower:
+                return code
+        # Exact / partial name
+        for code, name in names.items():
+            if (name or "").lower() == lower:
+                return code
+        for code, name in names.items():
+            if lower in (name or "").lower():
+                return code
+        return raw.lower()
+
+    async def _filter_rows_by_country(
+        self, items: List[Dict], country: Optional[str]
+    ) -> List[Dict]:
+        """Filter rows by player country. Category-only rows use current WR holders."""
+        if not country or not items:
+            return items
+        code = await self._resolve_country_code(country)
+        if not code:
+            return []
+        player_countries = await github_cache_fetcher.get_player_countries() or {}
+
+        if any(item.get("playerId") for item in items):
+            return [
+                item for item in items
+                if self._player_matches_country(
+                    item.get("playerId"), code, player_countries
+                )
+            ]
+
+        # Category rows without playerId — keep if any current WR holder matches
+        world_records = await github_cache_fetcher.fetch_current_world_records() or {}
+        out = []
+        for item in items:
+            cat = item.get("category") or ""
+            runs = world_records.get(cat) or []
+            matched = False
+            for run in runs:
+                for pid in dm.get_player_ids(run):
+                    if self._player_matches_country(pid, code, player_countries):
+                        matched = True
+                        break
+                if matched:
+                    break
+            if matched:
+                out.append(item)
+        return out
+
+    def _country_metrics(self, row: Dict, tied: Optional[str] = None) -> Dict:
+        """Pick WR-days for country rows (untied/tied split on wrDays* only)."""
+        if tied == "untied":
+            return {"wrDays": row.get("wrDaysUntied") or 0}
+        if tied == "tied":
+            return {"wrDays": row.get("wrDaysTied") or 0}
+        return {"wrDays": row.get("wrDays") or 0}
 
     def _filter_longevity_tied(self, items: List[Dict], tied: Optional[str] = None) -> List[Dict]:
         """Match FastSnakeStats longevity/career tied chips (missing tiedHolders => 1)."""
@@ -1848,6 +2047,7 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[str] = None,
     ) -> Optional[List[Dict]]:
         """Player hold history from longevity.all (FastSnakeStats Player tab)."""
         longevity = await github_cache_fetcher.get_longevity("all")
@@ -1876,6 +2076,7 @@ class FastSnakeStats(commands.Cog):
             speed=speed,
             size=size,
             run_mode=run_mode,
+            ce_display=ce_display if ce_display is not None else CE_DISPLAY_DEFAULT,
         )
 
         if hold_mode == "old":
@@ -1909,6 +2110,7 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[str] = None,
         limit: int = 50,
     ) -> Optional[Dict[str, List[Dict]]]:
         """Rebuild contested/popularity/stale for a filter from full progression."""
@@ -1919,6 +2121,7 @@ class FastSnakeStats(commands.Cog):
         latest = ((explorer.get('meta') or {}).get('dateRange') or {}).get('latest')
         if not latest:
             latest = datetime.now().strftime('%Y-%m-%d')
+        ce = ce_display if ce_display is not None else CE_DISPLAY_DEFAULT
 
         contested: List[Dict] = []
         popularity: List[Dict] = []
@@ -1934,6 +2137,7 @@ class FastSnakeStats(commands.Cog):
                 speed=speed,
                 size=size,
                 run_mode=run_mode,
+                ce_display=ce,
             ):
                 continue
 
@@ -1958,15 +2162,12 @@ class FastSnakeStats(commands.Cog):
             if not (
                 parts.get('game_mode') == 'Statue'
                 and parts.get('run_mode') == 'High Score'
-                and parts.get('size') == 'Small'
-                and parts.get('apple_amount') == 'Bomb'
             ):
                 popularity.append(row)
-            if days_with_record > 0:
-                stale.append(row)
+            stale.append(dict(row))
 
-        contested.sort(key=lambda r: (-r['flips'], -r['uniqueHolders']))
-        popularity.sort(key=lambda r: (-r['uniqueHolders'], -r['daysWithRecord']))
+        contested.sort(key=lambda r: (-r['flips'], -r['uniqueHolders'], r['category']))
+        popularity.sort(key=lambda r: (-r['uniqueHolders'], -r['flips'], r['category']))
         stale.sort(
             key=lambda r: (r['flips'], r['uniqueHolders'], r['tiedHolders'], -r['holdDays'])
         )
@@ -1976,31 +2177,87 @@ class FastSnakeStats(commands.Cog):
             'stale': stale[:limit],
         }
 
-    async def _get_contested_items(self, limit: int = 50, **filters) -> Optional[List[Dict]]:
-        items = await github_cache_fetcher.get_contested()
-        if items is None:
-            return None
-        if self._any_category_filters(**filters):
+    async def _get_contested_items(
+        self, limit: int = 50, country: Optional[str] = None, **filters
+    ) -> Optional[List[Dict]]:
+        ce = filters.pop("ce_display", None)
+        if ce is None:
+            ce = CE_DISPLAY_DEFAULT
+        filters["ce_display"] = ce
+        explicit = any(
+            filters.get(k)
+            for k in ("game_mode", "apple_amount", "speed", "size", "run_mode")
+        )
+        if explicit:
+            rebuilt = await self._build_ranked_category_lists_from_progression(
+                limit=max(limit * 3, 150), **filters
+            )
+            if rebuilt is None:
+                return None
+            items = rebuilt["contested"]
+        else:
+            items = await github_cache_fetcher.get_contested()
+            if items is None:
+                return None
             items = self._filter_category_rows(items, **filters)
+        items = await self._filter_rows_by_country(items, country)
         return items[:limit]
 
     async def _get_popularity_items(
-        self, tied: Optional[str] = None, limit: int = 50, **filters
+        self,
+        tied: Optional[str] = None,
+        limit: int = 50,
+        country: Optional[str] = None,
+        **filters,
     ) -> Optional[List[Dict]]:
-        items = await github_cache_fetcher.get_popularity()
-        if items is None:
-            return None
-        if self._any_category_filters(**filters):
+        ce = filters.pop("ce_display", None)
+        if ce is None:
+            ce = CE_DISPLAY_DEFAULT
+        filters["ce_display"] = ce
+        explicit = any(
+            filters.get(k)
+            for k in ("game_mode", "apple_amount", "speed", "size", "run_mode")
+        )
+        if explicit:
+            rebuilt = await self._build_ranked_category_lists_from_progression(
+                limit=max(limit * 3, 150), **filters
+            )
+            if rebuilt is None:
+                return None
+            items = rebuilt["popularity"]
+        else:
+            items = await github_cache_fetcher.get_popularity()
+            if items is None:
+                return None
             items = self._filter_category_rows(items, **filters)
         items = self._filter_popularity_tied(items, tied)
+        items = await self._filter_rows_by_country(items, country)
         return items[:limit]
 
-    async def _get_stale_items(self, limit: int = 50, **filters) -> Optional[List[Dict]]:
-        items = await github_cache_fetcher.get_stale()
-        if items is None:
-            return None
-        if self._any_category_filters(**filters):
+    async def _get_stale_items(
+        self, limit: int = 50, country: Optional[str] = None, **filters
+    ) -> Optional[List[Dict]]:
+        ce = filters.pop("ce_display", None)
+        if ce is None:
+            ce = CE_DISPLAY_DEFAULT
+        filters["ce_display"] = ce
+        explicit = any(
+            filters.get(k)
+            for k in ("game_mode", "apple_amount", "speed", "size", "run_mode")
+        )
+        if explicit:
+            rebuilt = await self._build_ranked_category_lists_from_progression(
+                limit=max(limit * 3, 150), **filters
+            )
+            if rebuilt is None:
+                return None
+            items = rebuilt["stale"]
+        else:
+            items = await github_cache_fetcher.get_stale()
+            if items is None:
+                return None
             items = self._filter_category_rows(items, **filters)
+        items = await self._filter_rows_by_country(items, country)
         return items[:limit]
 
     async def _get_legends_items(
@@ -2011,6 +2268,8 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[str] = None,
+        country: Optional[str] = None,
     ) -> Optional[List[Dict]]:
         """Merged Legends + Unicorns list matching FastSnakeStats Show filter."""
         legends = await github_cache_fetcher.get_legends()
@@ -2031,7 +2290,9 @@ class FastSnakeStats(commands.Cog):
             speed=speed,
             size=size,
             run_mode=run_mode,
+            ce_display=ce_display if ce_display is not None else CE_DISPLAY_DEFAULT,
         )
+        tagged = await self._filter_rows_by_country(tagged, country)
         if show == "all":
             tagged.sort(
                 key=lambda r: (
@@ -2079,6 +2340,8 @@ class FastSnakeStats(commands.Cog):
         apple_amount: Optional[str] = None,
         speed: Optional[str] = None,
         size: Optional[str] = None,
+        ce_display: Optional[str] = None,
+        **_extra,
     ) -> int:
         meta = data.get("meta") or {}
         apples = [apple_amount] if apple_amount else list(
@@ -2099,6 +2362,9 @@ class FastSnakeStats(commands.Cog):
             modes = [game_mode] if game_mode in all_modes else []
         else:
             modes = all_modes
+        ce = ce_display if ce_display is not None else CE_DISPLAY_DEFAULT
+        if not (game_mode and dm.is_ce_level_mode(game_mode)):
+            modes = dm.filter_modes_for_ce_display(modes, ce)
         return len(apples) * len(speeds) * len(sizes) * len(modes)
 
     def _filter_mastery_completions(
@@ -2108,8 +2374,11 @@ class FastSnakeStats(commands.Cog):
         apple_amount: Optional[str] = None,
         speed: Optional[str] = None,
         size: Optional[str] = None,
+        ce_display: Optional[str] = None,
+        **_extra,
     ) -> List[Dict]:
         rows = []
+        ce = ce_display if ce_display is not None else CE_DISPLAY_DEFAULT
         for item in completed or []:
             row = self._normalize_mastery_completion(item)
             if not row:
@@ -2120,6 +2389,7 @@ class FastSnakeStats(commands.Cog):
                 apple_amount=apple_amount,
                 speed=speed,
                 size=size,
+                ce_display=ce,
             ):
                 continue
             rows.append(row)
@@ -2131,6 +2401,8 @@ class FastSnakeStats(commands.Cog):
         apple_amount: Optional[str] = None,
         speed: Optional[str] = None,
         size: Optional[str] = None,
+        ce_display: Optional[str] = None,
+        country: Optional[str] = None,
         limit: int = 50,
     ) -> Optional[Dict]:
         data = await github_cache_fetcher.fetch_mastery_challenge()
@@ -2141,6 +2413,7 @@ class FastSnakeStats(commands.Cog):
             apple_amount=apple_amount,
             speed=speed,
             size=size,
+            ce_display=ce_display if ce_display is not None else CE_DISPLAY_DEFAULT,
         )
         board_count = self._count_mastery_universe(data, **filters)
         by_player = data.get("byPlayer") or {}
@@ -2160,6 +2433,7 @@ class FastSnakeStats(commands.Cog):
             })
             for row in matched:
                 community_seen[row["category"]] = True
+        rows = await self._filter_rows_by_country(rows, country)
         rows.sort(
             key=lambda r: (-(r.get("total") or 0), str(r.get("playerName") or ""))
         )
@@ -2196,6 +2470,7 @@ class FastSnakeStats(commands.Cog):
         apple_amount: Optional[str] = None,
         speed: Optional[str] = None,
         size: Optional[str] = None,
+        ce_display: Optional[str] = None,
     ) -> Optional[Dict]:
         data = await github_cache_fetcher.fetch_mastery_challenge()
         if not data:
@@ -2208,6 +2483,7 @@ class FastSnakeStats(commands.Cog):
             apple_amount=apple_amount,
             speed=speed,
             size=size,
+            ce_display=ce_display if ce_display is not None else CE_DISPLAY_DEFAULT,
         )
         board_count = self._count_mastery_universe(data, **filters)
         completed = (entry.get("completed") or []) if entry else []
@@ -2386,7 +2662,7 @@ class FastSnakeStats(commands.Cog):
         return embed
 
     def create_career_embed(
-        self, items: List[Dict], tied: str = "all", page: int = 0
+        self, items: List[Dict], tied: str = "all", page: int = 0, filter_label: str = ""
     ) -> discord.Embed:
         items_per_page = 10
         total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
@@ -2397,9 +2673,12 @@ class FastSnakeStats(commands.Cog):
             "untied": "Untied only",
             "tied": "Tied only",
         }.get(tied, "All holds")
+        title = f"📚 Career WR-days — {tied_label}"
+        if filter_label:
+            title += f" — {filter_label}"
 
         embed = discord.Embed(
-            title=f"📚 Career WR-days — {tied_label}",
+            title=title,
             description="Players ranked by total days holding a world record",
             color=0x1abc9c,
             timestamp=datetime.now(),
@@ -2407,22 +2686,103 @@ class FastSnakeStats(commands.Cog):
         lines = []
         for i, item in enumerate(page_items, start + 1):
             best = item.get("bestAll") or {}
+            standing = item.get("bestStanding") or {}
             best_bits = ""
             if best.get("days") is not None:
                 best_bits = (
                     f" • best {best.get('days')}d "
                     f"({self._format_category_line(best.get('category', ''))})"
                 )
+            standing_bits = ""
+            if standing.get("days") is not None:
+                standing_bits = (
+                    f" • standing {standing.get('days')}d "
+                    f"({self._format_category_line(standing.get('category', ''))})"
+                )
             lines.append(
                 f"{i}. **{item.get('playerName', 'Unknown')}** — "
-                f"**{item.get('wrDays', 0)}** WR-days{best_bits}"
+                f"**{item.get('wrDays', 0)}** WR-days{best_bits}{standing_bits}"
             )
         embed.add_field(
             name="Top Careers",
             value="\n".join(lines) if lines else "No career data.",
             inline=False,
         )
+        embed.set_footer(
+            text=(
+                f"Data from FastSnakeStats • Page {page + 1}/{total_pages} • "
+                "Use /player name:… for full profile"
+            )
+        )
+        return embed
+
+    def create_country_embed(
+        self, items: List[Dict], tied: str = "all", page: int = 0, filter_label: str = ""
+    ) -> discord.Embed:
+        items_per_page = 10
+        total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
+        start = page * items_per_page
+        page_items = items[start:start + items_per_page]
+        title = "🌍 Country WR-days"
+        if filter_label:
+            title += f" — {filter_label}"
+        embed = discord.Embed(
+            title=title,
+            description="Countries ranked by total WR-days across players",
+            color=0x3498db,
+            timestamp=datetime.now(),
+        )
+        lines = []
+        for i, item in enumerate(page_items, start + 1):
+            top = item.get("topPlayer") or {}
+            top_bits = ""
+            if top.get("playerName"):
+                top_bits = f" · top {top.get('playerName')} ({top.get('wrDays', 0)}d)"
+            standing = item.get("bestStanding") or {}
+            stand_bits = ""
+            if standing.get("days") is not None:
+                stand_bits = f" · best standing {standing.get('days')}d"
+            lines.append(
+                f"{i}. **{item.get('countryName') or item.get('countryCode', '?')}** — "
+                f"**{item.get('wrDays', 0)}** WR-days · "
+                f"{item.get('playerCount', 0)} players · "
+                f"{item.get('standingHolds', 0)} standing{top_bits}{stand_bits}"
+            )
+        embed.add_field(
+            name="Countries",
+            value="\n".join(lines) if lines else "No country data.",
+            inline=False,
+        )
         embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
+        return embed
+
+    def create_about_embed(self, last_updated: str = "") -> discord.Embed:
+        embed = discord.Embed(
+            title="About FastSnakeStats",
+            description=(
+                "PuddingBot surfaces world-record data from **FastSnakeStats**, "
+                "made by **Yarmiplay**.\n"
+                "Credit to Google for images used."
+            ),
+            color=0xf5c518,
+            timestamp=datetime.now(),
+        )
+        if last_updated:
+            embed.add_field(name="Last Updated", value=last_updated, inline=False)
+        embed.add_field(
+            name="Links",
+            value=(
+                "[FastSnakeStats](https://stats.googlesnakemods.com/)\n"
+                "[Speedrun.com](https://www.speedrun.com/snake_game)\n"
+                "[All Apple Calc](https://allapplecalc.netlify.app/)\n"
+                "[WallSolver](https://wallsolver.googlesnakemods.com/)\n"
+                "[Old SnakeStats](https://snakestats.netlify.app/)\n"
+                "[Google Snake Discord](https://discord.gg/n3UZcHttqX)\n"
+                "[Play mods](https://googlesnakemods.com/v/current/)"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Data from FastSnakeStats")
         return embed
 
     def create_player_holds_embed(
@@ -2633,16 +2993,19 @@ class FastSnakeStats(commands.Cog):
         )
         return embed
 
-    def create_activity_embed(self, year: str, summary: Dict) -> discord.Embed:
+    def create_activity_embed(
+        self, year: str, summary: Dict, metric: str = "flips"
+    ) -> discord.Embed:
+        metric_label = "Flips" if metric == "flips" else "New WRs"
         embed = discord.Embed(
-            title=f"📅 Activity — {year}",
+            title=f"📅 Activity — {year} ({metric_label})",
             color=0x1abc9c,
             timestamp=datetime.now()
         )
         embed.add_field(
             name="Year Totals",
             value=(
-                f"**New WRs:** {summary['total_new_wrs']}\n"
+                f"**{metric_label}:** {summary['total']}\n"
                 f"**Active days:** {summary['active_days']}"
             ),
             inline=False
@@ -2652,16 +3015,19 @@ class FastSnakeStats(commands.Cog):
             lines = []
             for i, day in enumerate(top_days, 1):
                 lines.append(
-                    f"{i}. **{day['date']}** — {day['newWrs']} new WRs"
+                    f"{i}. **{day['date']}** — {day['value']} {metric_label.lower()}"
                 )
             embed.add_field(
                 name="Busiest Days",
                 value="\n".join(lines),
                 inline=False
             )
-        embed.set_footer(
-            text="Data from FastSnakeStats • New WR = #1 changed that day"
+        footer = (
+            "Flip = #1 player/time changed that day"
+            if metric == "flips"
+            else "New WR = SRC run dated that day"
         )
+        embed.set_footer(text=f"Data from FastSnakeStats • {footer}")
         return embed
 
     def create_leaderboards_embed(self, board_data: Dict, page: int = 0) -> discord.Embed:
@@ -2835,6 +3201,7 @@ class FastSnakeStats(commands.Cog):
         speed="Optional speed filter (holds/Mastery list)",
         size="Optional size filter (holds/Mastery list)",
         run_mode="Optional run mode filter; Timed = non-HS (WR holds list)",
+        ce_display="Category Extensions display (default Off)",
     )
     @app_commands.choices(
         holds=[
@@ -2849,6 +3216,7 @@ class FastSnakeStats(commands.Cog):
             app_commands.Choice(name="Untied only", value="untied"),
             app_commands.Choice(name="Tied only", value="tied"),
         ],
+        ce_display=CE_DISPLAY_CHOICES,
     )
     @app_commands.autocomplete(
         date=player_date_autocomplete,
@@ -2871,6 +3239,7 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[app_commands.Choice[str]] = None,
     ):
         """Get player statistics and recent activity"""
         await interaction.response.defer()
@@ -2886,6 +3255,7 @@ class FastSnakeStats(commands.Cog):
                     apple_amount=apple_amount,
                     speed=speed,
                     size=size,
+                    ce_display=ce_display.value if ce_display else CE_DISPLAY_DEFAULT,
                 )
                 data = await self._get_player_mastery_items(
                     player_id=player_id,
@@ -2932,6 +3302,7 @@ class FastSnakeStats(commands.Cog):
                     speed=speed,
                     size=size,
                     run_mode=run_mode,
+                    ce_display=ce_display.value if ce_display else CE_DISPLAY_DEFAULT,
                 )
                 filter_label = self._format_category_filters(
                     **filters, tied=tied_mode if hold_mode == "present" else None
@@ -2996,28 +3367,62 @@ class FastSnakeStats(commands.Cog):
             print(f"Error in player command: {e}")
             await interaction.followup.send("❌ An error occurred while fetching player data. Please try again.")
     
-    @app_commands.command(name="stats", description="Get top record holders statistics")
+    @app_commands.command(name="stats", description="Rankings: Overall% and Relative% of WR holders")
     @app_commands.describe(
-        date="Historical date - optional"
+        date="Historical date - optional",
+        apple_amount="Optional apple count filter",
+        speed="Optional speed filter",
+        size="Optional size filter",
+        run_mode="Optional run mode filter; Timed = non-HS",
+        game_mode="Optional mode or High score modes only",
+        ce_display="Category Extensions display (default Off)",
+        country="Optional country filter",
     )
-    @app_commands.autocomplete(date=stats_date_autocomplete)
-    async def stats_command(self, interaction: discord.Interaction, date: Optional[str] = None):
+    @app_commands.choices(ce_display=CE_DISPLAY_CHOICES)
+    @app_commands.autocomplete(
+        date=stats_date_autocomplete,
+        game_mode=list_game_mode_autocomplete,
+        apple_amount=record_apple_amount_autocomplete,
+        speed=record_speed_autocomplete,
+        size=record_size_autocomplete,
+        run_mode=list_run_mode_autocomplete,
+        country=country_autocomplete,
+    )
+    async def stats_command(
+        self,
+        interaction: discord.Interaction,
+        date: Optional[str] = None,
+        apple_amount: Optional[str] = None,
+        speed: Optional[str] = None,
+        size: Optional[str] = None,
+        run_mode: Optional[str] = None,
+        game_mode: Optional[str] = None,
+        ce_display: Optional[app_commands.Choice[str]] = None,
+        country: Optional[str] = None,
+    ):
         """Get top record holders statistics"""
         await interaction.response.defer()
         
         try:
-            # Get stats data
-            stats_data = await self.get_stats_data(date)
+            ce = ce_display.value if ce_display else CE_DISPLAY_DEFAULT
+            stats_data = await self.get_stats_data(
+                date=date,
+                apple_amount=apple_amount,
+                speed=speed,
+                size=size,
+                run_mode=run_mode,
+                game_mode=game_mode,
+                ce_display=ce,
+                country=country,
+            )
             
             if not stats_data:
-                await interaction.followup.send("❌ No statistics data available.")
+                await interaction.followup.send("❌ No statistics data available for those filters.")
                 return
             
-            # Create embed with pagination
             embed = self.create_stats_embed(stats_data, page=0)
             
-            # Create view with pagination buttons (only if multiple pages)
-            total_pages = (len(stats_data['top_by_percentage']) + 9) // 10  # 10 players per page
+            total_pages = (len(stats_data.get('ranked') or []) + 9) // 10
             if total_pages > 1:
                 view = StatsPaginationView(stats_data, interaction.user.id)
                 await interaction.followup.send(embed=embed, view=view)
@@ -3039,17 +3444,21 @@ class FastSnakeStats(commands.Cog):
         speed="Optional speed filter",
         size="Optional size filter",
         run_mode="Optional run mode filter",
+        ce_display="Category Extensions display (default Off)",
     )
-    @app_commands.choices(tier=[
-        app_commands.Choice(name="Free", value="Free"),
-        app_commands.Choice(name="Warmup", value="Warmup"),
-        app_commands.Choice(name="Easy", value="Easy"),
-        app_commands.Choice(name="Medium", value="Medium"),
-        app_commands.Choice(name="Hard", value="Hard"),
-        app_commands.Choice(name="Mythic", value="Mythic"),
-        app_commands.Choice(name="Lottery", value="Lottery"),
-        app_commands.Choice(name="Inhuman", value="Inhuman"),
-    ])
+    @app_commands.choices(
+        tier=[
+            app_commands.Choice(name="Free", value="Free"),
+            app_commands.Choice(name="Warmup", value="Warmup"),
+            app_commands.Choice(name="Easy", value="Easy"),
+            app_commands.Choice(name="Medium", value="Medium"),
+            app_commands.Choice(name="Hard", value="Hard"),
+            app_commands.Choice(name="Mythic", value="Mythic"),
+            app_commands.Choice(name="Lottery", value="Lottery"),
+            app_commands.Choice(name="Inhuman", value="Inhuman"),
+        ],
+        ce_display=CE_DISPLAY_CHOICES,
+    )
     @app_commands.autocomplete(
         game_mode=record_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
@@ -3066,6 +3475,7 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[app_commands.Choice[str]] = None,
     ):
         """Get a random valid combination of game settings"""
         await interaction.response.defer()
@@ -3091,6 +3501,7 @@ class FastSnakeStats(commands.Cog):
                 return
 
             tier_value = tier.value if tier else None
+            ce = ce_display.value if ce_display else CE_DISPLAY_DEFAULT
             combination = self.get_random_combination(
                 game_mode=game_mode,
                 apple_amount=apple_amount,
@@ -3098,6 +3509,7 @@ class FastSnakeStats(commands.Cog):
                 size=size,
                 run_mode=run_mode,
                 tier=tier_value,
+                ce_display=ce,
             )
             if not combination:
                 bits = [
@@ -3276,15 +3688,25 @@ class FastSnakeStats(commands.Cog):
 
             embed = self.create_progression_embed(settings_key, flips, page=0)
             total_pages = max(1, (len(flips) + 7) // 8)
+            png = stats_charts.progression_chart_png(
+                flips,
+                title=dm.format_category_key(settings_key, with_icons=False),
+                high_score=(run_mode == "High Score"),
+            )
+            files = []
+            if png:
+                import io
+                files.append(discord.File(fp=io.BytesIO(png), filename="progression.png"))
+                embed.set_image(url="attachment://progression.png")
             if total_pages > 1:
                 view = ListPaginationView(
                     interaction.user.id,
                     total_pages,
                     lambda page: self.create_progression_embed(settings_key, flips, page),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                await interaction.followup.send(embed=embed, view=view, files=files)
             else:
-                await interaction.followup.send(embed=embed)
+                await interaction.followup.send(embed=embed, files=files)
         except Exception as e:
             print(f"Error in progression command: {e}")
             await interaction.followup.send("❌ An error occurred while fetching progression data.")
@@ -3298,6 +3720,8 @@ class FastSnakeStats(commands.Cog):
         speed="Optional speed filter",
         size="Optional size filter",
         run_mode="Optional run mode filter; Timed = all non-High Score",
+        ce_display="Category Extensions display (default Off)",
+        country="Optional country filter",
     )
     @app_commands.choices(
         filter=[
@@ -3309,6 +3733,7 @@ class FastSnakeStats(commands.Cog):
             app_commands.Choice(name="Untied only", value="untied"),
             app_commands.Choice(name="Tied only", value="tied"),
         ],
+        ce_display=CE_DISPLAY_CHOICES,
     )
     @app_commands.autocomplete(
         game_mode=list_game_mode_autocomplete,
@@ -3316,6 +3741,7 @@ class FastSnakeStats(commands.Cog):
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
         run_mode=list_run_mode_autocomplete,
+        country=country_autocomplete,
     )
     async def longevity_command(
         self,
@@ -3327,6 +3753,8 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[app_commands.Choice[str]] = None,
+        country: Optional[str] = None,
     ):
         await interaction.response.defer()
         try:
@@ -3338,6 +3766,8 @@ class FastSnakeStats(commands.Cog):
                 speed=speed,
                 size=size,
                 run_mode=run_mode,
+                ce_display=ce_display.value if ce_display else CE_DISPLAY_DEFAULT,
+                country=country,
             )
             filter_label = self._format_category_filters(**filters, tied=tied_mode)
             items = await self._get_longevity_items(
@@ -3371,17 +3801,22 @@ class FastSnakeStats(commands.Cog):
             await interaction.followup.send("❌ An error occurred while fetching longevity data.")
 
     @app_commands.command(name="improving", description="Players gaining the most world records")
-    @app_commands.describe(window="Time window for WR gains")
+    @app_commands.describe(
+        window="Time window for WR gains",
+        country="Optional country filter",
+    )
     @app_commands.choices(window=[
         app_commands.Choice(name="7 days", value="7d"),
         app_commands.Choice(name="30 days", value="30d"),
         app_commands.Choice(name="90 days", value="90d"),
         app_commands.Choice(name="365 days", value="365d"),
     ])
+    @app_commands.autocomplete(country=country_autocomplete)
     async def improving_command(
         self,
         interaction: discord.Interaction,
         window: Optional[app_commands.Choice[str]] = None,
+        country: Optional[str] = None,
     ):
         await interaction.response.defer()
         try:
@@ -3390,6 +3825,7 @@ class FastSnakeStats(commands.Cog):
             if items is None:
                 await interaction.followup.send("❌ Improving-player data unavailable.")
                 return
+            items = await self._filter_rows_by_country(items or [], country)
             if not items:
                 await interaction.followup.send(f"❌ No improving players for window `{window_key}`.")
                 return
@@ -3416,13 +3852,17 @@ class FastSnakeStats(commands.Cog):
         speed="Optional speed filter",
         size="Optional size filter",
         run_mode="Optional run mode filter; Timed = all non-High Score",
+        ce_display="Category Extensions display (default Off)",
+        country="Optional country filter",
     )
+    @app_commands.choices(ce_display=CE_DISPLAY_CHOICES)
     @app_commands.autocomplete(
         game_mode=list_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
         run_mode=list_run_mode_autocomplete,
+        country=country_autocomplete,
     )
     async def contested_command(
         self,
@@ -3432,6 +3872,8 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[app_commands.Choice[str]] = None,
+        country: Optional[str] = None,
     ):
         await interaction.response.defer()
         try:
@@ -3441,6 +3883,8 @@ class FastSnakeStats(commands.Cog):
                 speed=speed,
                 size=size,
                 run_mode=run_mode,
+                ce_display=ce_display.value if ce_display else CE_DISPLAY_DEFAULT,
+                country=country,
             )
             filter_label = self._format_category_filters(**filters)
             items = await self._get_contested_items(**filters)
@@ -3475,18 +3919,24 @@ class FastSnakeStats(commands.Cog):
         speed="Optional speed filter",
         size="Optional size filter",
         run_mode="Optional run mode filter; Timed = all non-High Score",
+        ce_display="Category Extensions display (default Off)",
+        country="Optional country filter",
     )
-    @app_commands.choices(tied=[
-        app_commands.Choice(name="Both", value="all"),
-        app_commands.Choice(name="Untied", value="untied"),
-        app_commands.Choice(name="Tied", value="tied"),
-    ])
+    @app_commands.choices(
+        tied=[
+            app_commands.Choice(name="Both", value="all"),
+            app_commands.Choice(name="Untied", value="untied"),
+            app_commands.Choice(name="Tied", value="tied"),
+        ],
+        ce_display=CE_DISPLAY_CHOICES,
+    )
     @app_commands.autocomplete(
         game_mode=list_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
         run_mode=list_run_mode_autocomplete,
+        country=country_autocomplete,
     )
     async def popularity_command(
         self,
@@ -3497,6 +3947,8 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[app_commands.Choice[str]] = None,
+        country: Optional[str] = None,
     ):
         await interaction.response.defer()
         try:
@@ -3507,6 +3959,8 @@ class FastSnakeStats(commands.Cog):
                 speed=speed,
                 size=size,
                 run_mode=run_mode,
+                ce_display=ce_display.value if ce_display else CE_DISPLAY_DEFAULT,
+                country=country,
             )
             filter_label = self._format_category_filters(**filters, tied=tied_mode)
             items = await self._get_popularity_items(tied=tied_mode, **filters)
@@ -3543,13 +3997,17 @@ class FastSnakeStats(commands.Cog):
         speed="Optional speed filter",
         size="Optional size filter",
         run_mode="Optional run mode filter; Timed = all non-High Score",
+        ce_display="Category Extensions display (default Off)",
+        country="Optional country filter",
     )
+    @app_commands.choices(ce_display=CE_DISPLAY_CHOICES)
     @app_commands.autocomplete(
         game_mode=list_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
         run_mode=list_run_mode_autocomplete,
+        country=country_autocomplete,
     )
     async def stale_command(
         self,
@@ -3559,6 +4017,8 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[app_commands.Choice[str]] = None,
+        country: Optional[str] = None,
     ):
         await interaction.response.defer()
         try:
@@ -3568,6 +4028,8 @@ class FastSnakeStats(commands.Cog):
                 speed=speed,
                 size=size,
                 run_mode=run_mode,
+                ce_display=ce_display.value if ce_display else CE_DISPLAY_DEFAULT,
+                country=country,
             )
             filter_label = self._format_category_filters(**filters)
             items = await self._get_stale_items(**filters)
@@ -3598,16 +4060,26 @@ class FastSnakeStats(commands.Cog):
         name="career",
         description="Career WR-days leaderboard (all / untied / tied holds)",
     )
-    @app_commands.describe(tied="All holds, untied-only, or tied-only WR-days")
+    @app_commands.describe(
+        tied="All holds, untied-only, or tied-only WR-days",
+        player_name="Optional player name search",
+        country="Optional country filter",
+    )
     @app_commands.choices(tied=[
         app_commands.Choice(name="All holds", value="all"),
         app_commands.Choice(name="Untied only", value="untied"),
         app_commands.Choice(name="Tied only", value="tied"),
     ])
+    @app_commands.autocomplete(
+        player_name=player_name_autocomplete,
+        country=country_autocomplete,
+    )
     async def career_command(
         self,
         interaction: discord.Interaction,
         tied: Optional[app_commands.Choice[str]] = None,
+        player_name: Optional[str] = None,
+        country: Optional[str] = None,
     ):
         await interaction.response.defer()
         try:
@@ -3616,8 +4088,11 @@ class FastSnakeStats(commands.Cog):
             if rows is None:
                 await interaction.followup.send("❌ Career data unavailable.")
                 return
+            needle = (player_name or "").lower().strip()
             items = []
             for row in rows:
+                if needle and needle not in (row.get("playerName") or "").lower():
+                    continue
                 metrics = self._career_metrics(row, tied_mode)
                 if metrics["wrDays"] <= 0 and not metrics["bestAll"] and not metrics["bestStanding"]:
                     continue
@@ -3628,6 +4103,7 @@ class FastSnakeStats(commands.Cog):
                     "bestAll": metrics["bestAll"],
                     "bestStanding": metrics["bestStanding"],
                 })
+            items = await self._filter_rows_by_country(items, country)
             items.sort(
                 key=lambda r: (
                     -(r.get("wrDays") or 0),
@@ -3636,16 +4112,25 @@ class FastSnakeStats(commands.Cog):
             )
             items = items[:50]
             if not items:
-                await interaction.followup.send("❌ No career entries for that tied filter.")
+                await interaction.followup.send("❌ No career entries for that filter.")
                 return
 
-            embed = self.create_career_embed(items, tied=tied_mode, page=0)
+            filter_label = self._format_category_filters(
+                tied=tied_mode, country=country
+            )
+            if player_name:
+                filter_label = (filter_label + " • " if filter_label else "") + f"search:{player_name}"
+            embed = self.create_career_embed(
+                items, tied=tied_mode, page=0, filter_label=filter_label
+            )
             total_pages = max(1, (len(items) + 9) // 10)
             if total_pages > 1:
                 view = ListPaginationView(
                     interaction.user.id,
                     total_pages,
-                    lambda page: self.create_career_embed(items, tied_mode, page),
+                    lambda page: self.create_career_embed(
+                        items, tied_mode, page, filter_label
+                    ),
                 )
                 await interaction.followup.send(embed=embed, view=view)
             else:
@@ -3664,13 +4149,17 @@ class FastSnakeStats(commands.Cog):
         apple_amount="Optional apple count filter",
         speed="Optional speed filter",
         size="Optional size filter",
+        ce_display="Category Extensions display (default Off)",
+        country="Optional country filter (leaderboard)",
     )
+    @app_commands.choices(ce_display=CE_DISPLAY_CHOICES)
     @app_commands.autocomplete(
         player_name=player_name_autocomplete,
         game_mode=mastery_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
+        country=country_autocomplete,
     )
     async def mastery_command(
         self,
@@ -3680,6 +4169,8 @@ class FastSnakeStats(commands.Cog):
         apple_amount: Optional[str] = None,
         speed: Optional[str] = None,
         size: Optional[str] = None,
+        ce_display: Optional[app_commands.Choice[str]] = None,
+        country: Optional[str] = None,
     ):
         await interaction.response.defer()
         try:
@@ -3688,6 +4179,7 @@ class FastSnakeStats(commands.Cog):
                 apple_amount=apple_amount,
                 speed=speed,
                 size=size,
+                ce_display=ce_display.value if ce_display else CE_DISPLAY_DEFAULT,
             )
             if player_name:
                 peak_stats = await github_cache_fetcher.get_player_peak_stats(player_name)
@@ -3725,7 +4217,7 @@ class FastSnakeStats(commands.Cog):
                     await interaction.followup.send(embed=embed)
                 return
 
-            data = await self._get_mastery_leaderboard(**filters)
+            data = await self._get_mastery_leaderboard(**filters, country=country)
             if data is None:
                 await interaction.followup.send("❌ Mastery data unavailable.")
                 return
@@ -3761,13 +4253,17 @@ class FastSnakeStats(commands.Cog):
         speed="Optional speed filter",
         size="Optional size filter",
         run_mode="Optional run mode filter; Timed = all non-High Score",
+        ce_display="Category Extensions display (default Off)",
+        country="Optional country filter",
     )
+    @app_commands.choices(ce_display=CE_DISPLAY_CHOICES)
     @app_commands.autocomplete(
         game_mode=list_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
         run_mode=list_run_mode_autocomplete,
+        country=country_autocomplete,
     )
     async def unicorns_command(
         self,
@@ -3777,6 +4273,8 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[app_commands.Choice[str]] = None,
+        country: Optional[str] = None,
     ):
         await interaction.response.defer()
         try:
@@ -3786,6 +4284,8 @@ class FastSnakeStats(commands.Cog):
                 speed=speed,
                 size=size,
                 run_mode=run_mode,
+                ce_display=ce_display.value if ce_display else CE_DISPLAY_DEFAULT,
+                country=country,
             )
             filter_label = self._format_category_filters(**filters)
             items = await self._get_legends_items(show="unicorns", **filters)
@@ -3827,18 +4327,24 @@ class FastSnakeStats(commands.Cog):
         speed="Optional speed filter",
         size="Optional size filter",
         run_mode="Optional run mode filter; Timed = all non-High Score",
+        ce_display="Category Extensions display (default Off)",
+        country="Optional country filter",
     )
-    @app_commands.choices(show=[
-        app_commands.Choice(name="All", value="all"),
-        app_commands.Choice(name="Legends", value="legends"),
-        app_commands.Choice(name="Unicorns", value="unicorns"),
-    ])
+    @app_commands.choices(
+        show=[
+            app_commands.Choice(name="All", value="all"),
+            app_commands.Choice(name="Legends", value="legends"),
+            app_commands.Choice(name="Unicorns", value="unicorns"),
+        ],
+        ce_display=CE_DISPLAY_CHOICES,
+    )
     @app_commands.autocomplete(
         game_mode=list_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
         size=record_size_autocomplete,
         run_mode=list_run_mode_autocomplete,
+        country=country_autocomplete,
     )
     async def legends_command(
         self,
@@ -3849,6 +4355,8 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[app_commands.Choice[str]] = None,
+        country: Optional[str] = None,
     ):
         await interaction.response.defer()
         try:
@@ -3859,6 +4367,8 @@ class FastSnakeStats(commands.Cog):
                 speed=speed,
                 size=size,
                 run_mode=run_mode,
+                ce_display=ce_display.value if ce_display else CE_DISPLAY_DEFAULT,
+                country=country,
             )
             filter_label = self._format_category_filters(**filters)
             items = await self._get_legends_items(show=show_mode, **filters)
@@ -3900,17 +4410,21 @@ class FastSnakeStats(commands.Cog):
         speed="Optional speed filter",
         size="Optional size filter",
         run_mode="Optional run mode filter",
+        ce_display="Category Extensions display (default Off)",
     )
-    @app_commands.choices(tier=[
-        app_commands.Choice(name="Free", value="Free"),
-        app_commands.Choice(name="Warmup", value="Warmup"),
-        app_commands.Choice(name="Easy", value="Easy"),
-        app_commands.Choice(name="Medium", value="Medium"),
-        app_commands.Choice(name="Hard", value="Hard"),
-        app_commands.Choice(name="Mythic", value="Mythic"),
-        app_commands.Choice(name="Lottery", value="Lottery"),
-        app_commands.Choice(name="Inhuman", value="Inhuman"),
-    ])
+    @app_commands.choices(
+        tier=[
+            app_commands.Choice(name="Free", value="Free"),
+            app_commands.Choice(name="Warmup", value="Warmup"),
+            app_commands.Choice(name="Easy", value="Easy"),
+            app_commands.Choice(name="Medium", value="Medium"),
+            app_commands.Choice(name="Hard", value="Hard"),
+            app_commands.Choice(name="Mythic", value="Mythic"),
+            app_commands.Choice(name="Lottery", value="Lottery"),
+            app_commands.Choice(name="Inhuman", value="Inhuman"),
+        ],
+        ce_display=CE_DISPLAY_CHOICES,
+    )
     @app_commands.autocomplete(
         game_mode=list_game_mode_autocomplete,
         apple_amount=record_apple_amount_autocomplete,
@@ -3927,6 +4441,7 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
+        ce_display: Optional[app_commands.Choice[str]] = None,
     ):
         await interaction.response.defer()
         try:
@@ -3956,6 +4471,7 @@ class FastSnakeStats(commands.Cog):
                 speed=speed,
                 size=size,
                 run_mode=run_mode,
+                ce_display=ce_display.value if ce_display else CE_DISPLAY_DEFAULT,
             )
             filter_label = self._format_category_filters(**filters)
             rows = self._filter_category_rows(unheld_data.get('rows') or [], **filters)
@@ -4485,34 +5001,113 @@ class FastSnakeStats(commands.Cog):
             print(f"Error in compare command: {e}")
             await interaction.followup.send("❌ An error occurred while comparing players.")
 
+
+    @app_commands.command(name="about", description="FastSnakeStats credits and community links")
+    async def about_command(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            meta = await github_cache_fetcher.get_explorer_meta() or {}
+            last = meta.get("lastUpdated") or meta.get("dateRange", {}).get("latest") or ""
+            if last and "T" in str(last):
+                last = str(last).split("T")[0]
+            embed = self.create_about_embed(last_updated=str(last) if last else "")
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in about command: {e}")
+            await interaction.followup.send("❌ Could not build about embed.")
+
+    @app_commands.command(name="country", description="Country WR-days leaderboard")
+    @app_commands.describe(
+        tied="All / untied-only / tied-only WR-days",
+        search="Filter by country name",
+        country="Jump to a specific country code/name",
+    )
+    @app_commands.choices(tied=[
+        app_commands.Choice(name="All holds", value="all"),
+        app_commands.Choice(name="Untied only", value="untied"),
+        app_commands.Choice(name="Tied only", value="tied"),
+    ])
+    @app_commands.autocomplete(country=country_autocomplete)
+    async def country_command(
+        self,
+        interaction: discord.Interaction,
+        tied: Optional[app_commands.Choice[str]] = None,
+        search: Optional[str] = None,
+        country: Optional[str] = None,
+    ):
+        await interaction.response.defer()
+        try:
+            tied_mode = tied.value if tied else "all"
+            rows = await github_cache_fetcher.get_countries()
+            if rows is None:
+                await interaction.followup.send("❌ Country data unavailable.")
+                return
+            needle = (search or "").lower().strip()
+            code = await self._resolve_country_code(country) if country else None
+            items = []
+            for row in rows:
+                if code and (row.get("countryCode") or "").lower() != code.lower():
+                    continue
+                name = (row.get("countryName") or row.get("countryCode") or "")
+                if needle and needle not in name.lower() and needle not in (row.get("countryCode") or "").lower():
+                    continue
+                metrics = self._country_metrics(row, tied_mode)
+                if metrics["wrDays"] <= 0 and not row.get("bestAll") and not row.get("bestStanding"):
+                    continue
+                items.append({
+                    **row,
+                    "wrDays": metrics["wrDays"],
+                })
+            items.sort(key=lambda r: (-(r.get("wrDays") or 0), str(r.get("countryName") or "")))
+            if not items:
+                await interaction.followup.send("❌ No country entries for that filter.")
+                return
+            filter_label = self._format_category_filters(tied=tied_mode, country=country or search)
+            embed = self.create_country_embed(items, tied=tied_mode, page=0, filter_label=filter_label)
+            total_pages = max(1, (len(items) + 9) // 10)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_country_embed(items, tied_mode, page, filter_label),
+                )
+                await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in country command: {e}")
+            await interaction.followup.send("❌ An error occurred while fetching country data.")
+
     HELP_PAGES = [
         (
             "Records & time travel",
             "- `/record` — WR for a category (optional date)\n"
-            "- `/leaderboards` — full WR table for count/speed/size\n"
+            "- `/leaderboards` — full WR table for count/speed/size (`ce_display`)\n"
             "- `/available-dates` — dates with FastSnakeStats snapshots\n"
             "- `/watch add` — ping you when that category's WR changes\n"
             "- `/watch list` / `/watch remove` / `/watch clear`",
         ),
         (
             "Players",
-            "- `/player` — profile, holds, or Mastery boards\n"
+            "- `/player` — profile, holds, or Mastery boards (`ce_display`)\n"
             "- `/compare` — unique vs shared WR holds between two players\n"
-            "- `/career` — career WR-days leaderboard\n"
+            "- `/career` — career WR-days (search / country / best standing)\n"
+            "- `/country` — country WR-days leaderboard\n"
             "- `/mastery` — All Apples challenge leaderboard or one player\n"
             "- `/chronicle` — era newspaper, empire arcs, board wars, debuts",
         ),
         (
             "Statistics explorer",
-            "- `/stats` — top holders by count / percentage\n"
+            "- `/stats` — Rankings Overall% + Relative% (filters / CE / country)\n"
             "- `/report` — weekly WR changes\n"
             "- `/monthly` — oldest-records update\n"
-            "- `/random` — random valid challenge + current WR\n"
-            "- `/progression` `/longevity` `/improving` `/contested`\n"
-            "- `/popularity` `/stale` `/legends` `/unicorns` `/unheld` `/activity`",
+            "- `/random` — random valid challenge + current WR (`ce_display`)\n"
+            "- `/progression` (chart) `/longevity` `/improving` `/contested`\n"
+            "- `/popularity` `/stale` `/legends` `/unicorns` `/unheld` `/activity` (heatmap)",
         ),
         (
             "Tools",
+            "- `/about` — FastSnakeStats credits and community links\n"
             "- `/caption` — ESMBot-style caption on an image or GIF\n"
             "- Select Image — right-click a message → Apps → Select Image\n"
             "- `/wallall` — solve small-board Wall All (paste pudding `pattern 12…` copy, or a 90-cell 0/1 or 1/2 grid)\n"
@@ -4669,11 +5264,23 @@ class FastSnakeStats(commands.Cog):
 
     @app_commands.command(
         name="activity",
-        description="Yearly new-WR activity (day the #1 actually changed)",
+        description="Yearly activity heatmap (flips or new WRs)",
     )
-    @app_commands.describe(year="Year to summarize (defaults to latest)")
+    @app_commands.describe(
+        year="Year to summarize (defaults to latest)",
+        metric="flips = #1 changed; newWrs = SRC run dated that day",
+    )
+    @app_commands.choices(metric=[
+        app_commands.Choice(name="Flips (#1 changed)", value="flips"),
+        app_commands.Choice(name="New WRs (SRC date)", value="newWrs"),
+    ])
     @app_commands.autocomplete(year=activity_year_autocomplete)
-    async def activity_command(self, interaction: discord.Interaction, year: Optional[str] = None):
+    async def activity_command(
+        self,
+        interaction: discord.Interaction,
+        year: Optional[str] = None,
+        metric: Optional[app_commands.Choice[str]] = None,
+    ):
         await interaction.response.defer()
         try:
             heatmap = await github_cache_fetcher.get_activity_heatmap()
@@ -4692,28 +5299,40 @@ class FastSnakeStats(commands.Cog):
                 )
                 return
 
-            # Heatmap `flips` = #1 player/time changed vs previous day.
-            # Ignore heatmap `newWrs` (SRC run.date == snapshot day / verify timing).
+            metric_key = metric.value if metric else "flips"
             year_entries = []
             for e in heatmap:
                 if not (e.get('date') or '').startswith(selected_year):
                     continue
                 year_entries.append({
                     'date': e.get('date'),
-                    'newWrs': e.get('flips', 0) or 0,
+                    'flips': e.get('flips', 0) or 0,
+                    'newWrs': e.get('newWrs', 0) or 0,
+                    'value': e.get(metric_key, 0) or 0,
                 })
 
-            total_new = sum(e['newWrs'] for e in year_entries)
-            active_days = sum(1 for e in year_entries if e['newWrs'] > 0)
-            top_days = sorted(year_entries, key=lambda e: e['newWrs'], reverse=True)[:10]
+            total = sum(e['value'] for e in year_entries)
+            active_days = sum(1 for e in year_entries if e['value'] > 0)
+            top_days = sorted(year_entries, key=lambda e: e['value'], reverse=True)[:10]
 
             summary = {
-                'total_new_wrs': total_new,
+                'total': total,
                 'active_days': active_days,
                 'top_days': top_days,
             }
-            embed = self.create_activity_embed(selected_year, summary)
-            await interaction.followup.send(embed=embed)
+            embed = self.create_activity_embed(selected_year, summary, metric=metric_key)
+            png = stats_charts.activity_heatmap_png(
+                year_entries, selected_year, metric=metric_key
+            )
+            if png:
+                file = discord.File(
+                    fp=__import__("io").BytesIO(png),
+                    filename=f"activity-{selected_year}-{metric_key}.png",
+                )
+                embed.set_image(url=f"attachment://activity-{selected_year}-{metric_key}.png")
+                await interaction.followup.send(embed=embed, file=file)
+            else:
+                await interaction.followup.send(embed=embed)
         except Exception as e:
             print(f"Error in activity command: {e}")
             await interaction.followup.send("❌ An error occurred while fetching activity data.")
@@ -4727,7 +5346,9 @@ class FastSnakeStats(commands.Cog):
         speed="Game speed",
         size="Game size",
         date="Historical date - optional",
+        ce_display="Category Extensions display (default Off)",
     )
+    @app_commands.choices(ce_display=CE_DISPLAY_CHOICES)
     @app_commands.autocomplete(
         apple_amount=record_apple_amount_autocomplete,
         speed=record_speed_autocomplete,
@@ -4741,10 +5362,14 @@ class FastSnakeStats(commands.Cog):
         speed: str,
         size: str,
         date: Optional[str] = None,
+        ce_display: Optional[app_commands.Choice[str]] = None,
     ):
         await interaction.response.defer()
         try:
-            board_data = await self.get_leaderboards_data(apple_amount, speed, size, date)
+            ce = ce_display.value if ce_display else CE_DISPLAY_DEFAULT
+            board_data = await self.get_leaderboards_data(
+                apple_amount, speed, size, date, ce_display=ce
+            )
             if not board_data:
                 if date:
                     await interaction.followup.send(
@@ -4881,7 +5506,11 @@ class StatsPaginationView(discord.ui.View):
         self.user_id = user_id
         self.current_page = 0
         self.players_per_page = 10
-        self.total_pages = (len(stats_data['top_by_percentage']) + self.players_per_page - 1) // self.players_per_page
+        self.total_pages = max(
+            1,
+            (len(stats_data.get('ranked') or stats_data.get('top_by_percentage') or [])
+             + self.players_per_page - 1) // self.players_per_page
+        )
     
     @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
     async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -4913,42 +5542,49 @@ class StatsPaginationView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
     
     def create_stats_embed(self, stats_data: Dict, page: int = 0) -> discord.Embed:
-        """Create a rich embed for stats display with pagination"""
+        """Create rankings embed for pagination (Overall% + Relative%)."""
+        filter_label = stats_data.get("filter_label") or ""
+        title = "📊 Rankings — Top Record Holders"
+        if filter_label:
+            title += f" — {filter_label}"
         embed = discord.Embed(
-            title="📊 Top Record Holders",
-            color=0xff9900,  # Orange for statistics
+            title=title,
+            color=0xff9900,
             timestamp=datetime.now()
         )
-        
-        # Add top by percentage with pagination
+
+        ranked = stats_data.get("ranked") or stats_data.get("top_by_percentage") or []
         start_idx = page * self.players_per_page
         end_idx = start_idx + self.players_per_page
-        page_players = stats_data['top_by_percentage'][start_idx:end_idx]
-        
-        top_by_percentage_text = ""
+        page_players = ranked[start_idx:end_idx]
+        total_cats = stats_data.get("total_categories") or stats_data.get("total_world_records") or 1
+        sum_counts = stats_data.get("sum_counts") or total_cats
+
+        lines = []
         for i, (player, count) in enumerate(page_players, start_idx + 1):
-            percentage = (count / stats_data['total_world_records']) * 100
-            top_by_percentage_text += f"{i}. **{player}** - **{count}** records • {percentage:.1f}%\n"
-        
-        if not top_by_percentage_text:
-            top_by_percentage_text = "No more players to show."
-        
+            overall = (count / total_cats) * 100
+            relative = (count / sum_counts) * 100
+            lines.append(
+                f"{i}. **{player}** — **{count}** · "
+                f"Overall {overall:.1f}% · Relative {relative:.1f}%"
+            )
+
         embed.add_field(
             name="🏆 Most Records",
-            value=top_by_percentage_text,
+            value="\n".join(lines) if lines else "No more players to show.",
             inline=False
         )
-        
-        # Add total world records at the bottom
         embed.add_field(
-            name="📈 Total World Records",
-            value=str(stats_data['total_world_records']),
+            name="📈 Category Universe",
+            value=(
+                f"**{total_cats}** categories · "
+                f"**{sum_counts}** tied holds counted for Relative%"
+            ),
             inline=False
         )
-        
-        # Add footer with page info
-        embed.set_footer(text=f"Data from FastSnakeStats • {stats_data['date']} • Page {page + 1}/{self.total_pages}")
-        
+        embed.set_footer(
+            text=f"Data from FastSnakeStats • {stats_data['date']} • Page {page + 1}/{self.total_pages}"
+        )
         return embed
 
 class PlayerPaginationView(discord.ui.View):

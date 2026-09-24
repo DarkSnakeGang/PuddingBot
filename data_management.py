@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 # Game settings data structures (from FastSnakeStats)
 APPLE_AMOUNTS = {
@@ -365,6 +365,23 @@ def get_player_name(run_data: dict) -> str:
 
     return "Unknown Player"
 
+
+def get_player_ids(run_data: dict) -> List[str]:
+    """Extract all player IDs from a run (supports ties)."""
+    ids: List[str] = []
+    try:
+        players = (run_data or {}).get("players") or {}
+        data = players.get("data")
+        if isinstance(data, list):
+            for player in data:
+                pid = (player or {}).get("id")
+                if pid:
+                    ids.append(str(pid))
+    except Exception as e:
+        print(f"Error extracting player ids: {e}")
+    return ids
+
+
 def get_run_time(run_data: dict) -> str:
     """Extract and format run time from run data"""
     try:
@@ -500,6 +517,36 @@ def is_tally_ce_highscore_mode(gamemode: str) -> bool:
 def is_ce_level_highscore_mode(gamemode: str) -> bool:
     """True for CE RemixMod level modes with full High Score columns."""
     return gamemode in CE_LEVEL_HIGHSCORE_MODES
+
+
+def is_ce_level_mode(name: str) -> bool:
+    """True for RemixMod Category Extensions level modes (Chess…Ghost)."""
+    return name in CE_LEVEL_HIGHSCORE_MODES
+
+
+def filter_modes_for_ce_display(modes, ce_display: str = "Off"):
+    """Filter a mode iterable by CE display: Off | Mix | Only (default Off)."""
+    display = (ce_display or "Off").strip().capitalize()
+    if display == "Mix":
+        return list(modes)
+    if display == "Only":
+        return [m for m in modes if is_ce_level_mode(m)]
+    # Off — hide CE level modes
+    return [m for m in modes if not is_ce_level_mode(m)]
+
+
+def category_allowed_for_ce_display(settings_key: str, ce_display: str = "Off") -> bool:
+    """Whether a category key's mode is allowed under ce_display Off|Mix|Only."""
+    parts = (settings_key or "").split("|")
+    if len(parts) < 4:
+        return False
+    mode = parts[3]
+    display = (ce_display or "Off").strip().capitalize()
+    if display == "Mix":
+        return True
+    if display == "Only":
+        return is_ce_level_mode(mode)
+    return not is_ce_level_mode(mode)
 
 
 def allows_high_score(apple_amount: str, gamemode: str) -> bool:
