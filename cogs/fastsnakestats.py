@@ -2664,7 +2664,7 @@ class FastSnakeStats(commands.Cog):
     def create_career_embed(
         self, items: List[Dict], tied: str = "all", page: int = 0, filter_label: str = ""
     ) -> discord.Embed:
-        items_per_page = 10
+        items_per_page = 8
         total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
         start = page * items_per_page
         page_items = items[start:start + items_per_page]
@@ -2687,25 +2687,22 @@ class FastSnakeStats(commands.Cog):
         for i, item in enumerate(page_items, start + 1):
             best = item.get("bestAll") or {}
             standing = item.get("bestStanding") or {}
-            best_bits = ""
+            extras = []
             if best.get("days") is not None:
-                best_bits = (
-                    f" • best {best.get('days')}d "
-                    f"({self._format_category_line(best.get('category', ''))})"
-                )
-            standing_bits = ""
+                extras.append(f"best {best.get('days')}d")
             if standing.get("days") is not None:
-                standing_bits = (
-                    f" • standing {standing.get('days')}d "
-                    f"({self._format_category_line(standing.get('category', ''))})"
-                )
+                extras.append(f"standing {standing.get('days')}d")
+            extra_bits = f" · {', '.join(extras)}" if extras else ""
             lines.append(
                 f"{i}. **{item.get('playerName', 'Unknown')}** — "
-                f"**{item.get('wrDays', 0)}** WR-days{best_bits}{standing_bits}"
+                f"**{item.get('wrDays', 0)}** WR-days{extra_bits}"
             )
+        value = "\n".join(lines) if lines else "No career data."
+        if len(value) > 1024:
+            value = value[:1021] + "…"
         embed.add_field(
             name="Top Careers",
-            value="\n".join(lines) if lines else "No career data.",
+            value=value,
             inline=False,
         )
         embed.set_footer(
@@ -2719,7 +2716,7 @@ class FastSnakeStats(commands.Cog):
     def create_country_embed(
         self, items: List[Dict], tied: str = "all", page: int = 0, filter_label: str = ""
     ) -> discord.Embed:
-        items_per_page = 10
+        items_per_page = 8
         total_pages = max(1, (len(items) + items_per_page - 1) // items_per_page)
         start = page * items_per_page
         page_items = items[start:start + items_per_page]
@@ -2737,20 +2734,19 @@ class FastSnakeStats(commands.Cog):
             top = item.get("topPlayer") or {}
             top_bits = ""
             if top.get("playerName"):
-                top_bits = f" · top {top.get('playerName')} ({top.get('wrDays', 0)}d)"
-            standing = item.get("bestStanding") or {}
-            stand_bits = ""
-            if standing.get("days") is not None:
-                stand_bits = f" · best standing {standing.get('days')}d"
+                top_bits = f" · top {top.get('playerName')}"
             lines.append(
                 f"{i}. **{item.get('countryName') or item.get('countryCode', '?')}** — "
-                f"**{item.get('wrDays', 0)}** WR-days · "
-                f"{item.get('playerCount', 0)} players · "
-                f"{item.get('standingHolds', 0)} standing{top_bits}{stand_bits}"
+                f"**{item.get('wrDays', 0)}**d · "
+                f"{item.get('playerCount', 0)}p · "
+                f"{item.get('standingHolds', 0)} standing{top_bits}"
             )
+        value = "\n".join(lines) if lines else "No country data."
+        if len(value) > 1024:
+            value = value[:1021] + "…"
         embed.add_field(
             name="Countries",
-            value="\n".join(lines) if lines else "No country data.",
+            value=value,
             inline=False,
         )
         embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
@@ -4123,7 +4119,7 @@ class FastSnakeStats(commands.Cog):
             embed = self.create_career_embed(
                 items, tied=tied_mode, page=0, filter_label=filter_label
             )
-            total_pages = max(1, (len(items) + 9) // 10)
+            total_pages = max(1, (len(items) + 7) // 8)
             if total_pages > 1:
                 view = ListPaginationView(
                     interaction.user.id,
@@ -5064,7 +5060,7 @@ class FastSnakeStats(commands.Cog):
                 return
             filter_label = self._format_category_filters(tied=tied_mode, country=country or search)
             embed = self.create_country_embed(items, tied=tied_mode, page=0, filter_label=filter_label)
-            total_pages = max(1, (len(items) + 9) // 10)
+            total_pages = max(1, (len(items) + 7) // 8)
             if total_pages > 1:
                 view = ListPaginationView(
                     interaction.user.id,
