@@ -203,8 +203,11 @@ def get_response(user_input: str, user="Nobody", status_notify=None) -> str:
     lowered = user_input.lower()
     PuddingBot = '<@1210325027023753307>'
 
-    cringe_list = ['https://media.tenor.com/v8zqaakaqlaaaaac/sensational-poster-cinema-in-2014-aamirkhan.gif', 
-                   'https://tenor.com/view/pingas-butt-lame-fat-sitdown-gif-4771119']
+    # Dr. Eggman "pingas" Tenor link. Always answer with the same gif.
+    if lowered == 'https://tenor.com/view/pingas-butt-lame-fat-sitdown-gif-4771119':
+        return 'https://static.klipy.com/ii/e293a233a303a98e471f78d04e13a1b0/32/ee/lOnZ74l7.gif'
+
+    cringe_list = ['https://media.tenor.com/v8zqaakaqlaaaaac/sensational-poster-cinema-in-2014-aamirkhan.gif']
 
     if lowered in cringe_list:
         return get_random_funny_gif(os.getenv('KLIPY_KEY'), False)
