@@ -12,6 +12,82 @@ _POI_ANY_RE = re.compile(r"<a?:poi:\d+>", re.IGNORECASE)
 _POI_ONLY_RE = re.compile(rf"^<a?:poi:{re.escape(POI_EMOJI_ID)}>$")
 
 
+FASTSNAKESTATS_URL = "https://stats.googlesnakemods.com/"
+
+
+def wants_fastsnakestats_link(text: str) -> bool:
+    """True for questions like 'what's the website to see how many records I have?'."""
+    lowered = (text or "").lower()
+    if not lowered.strip():
+        return False
+
+    asks_for_site = any(
+        phrase in lowered
+        for phrase in (
+            "website",
+            "web site",
+            "site again",
+            "the site",
+            "the link",
+            "link again",
+            "url",
+            "where can i see",
+            "where do i see",
+            "where to see",
+            "where can i check",
+            "where do i check",
+            "where to check",
+            "where can i look",
+            "where do i look",
+            "where to look",
+            "where can i find",
+            "where do i find",
+            "where to find",
+            "whats the site",
+            "what's the site",
+            "whats the website",
+            "what's the website",
+            "whats the link",
+            "what's the link",
+        )
+    )
+    mentions_records = (
+        "world record" in lowered
+        or "world records" in lowered
+        or bool(re.search(r"\bwrs?\b", lowered))
+        or "how many records" in lowered
+        or "record count" in lowered
+        or "wr count" in lowered
+        or (
+            "records" in lowered
+            and any(
+                phrase in lowered
+                for phrase in (
+                    "how many",
+                    "see",
+                    "check",
+                    "view",
+                    "look up",
+                    "lookup",
+                    "look at",
+                    "track",
+                    "you have",
+                    "i have",
+                    "someone has",
+                )
+            )
+        )
+    )
+    asks_for_fss_by_name = (
+        any(
+            name in lowered
+            for name in ("fastsnake", "snake stats", "snakestats", "fast snake stats")
+        )
+        and any(word in lowered for word in ("link", "website", "site", "url", "where", "what"))
+    )
+    return asks_for_fss_by_name or (asks_for_site and mentions_records)
+
+
 def is_allowed_poi_message(content: str) -> bool:
     """True if the message is exactly the current poi emoji and nothing else."""
     return bool(_POI_ONLY_RE.match((content or "").strip()))
@@ -174,6 +250,7 @@ def clear_context():
         - /wallall - Solve a small-board Wall All Ham Cycle or Ham Path. Paste pudding copy (`pattern 12…`) or a 90-cell 0/1 or 1/2 grid
 
         I can help users look up world records, player statistics, historical data, Chronicle narratives, and statistics-explorer analytics from the FastSnakeStats database. Commands that take a date support optional historical date parameters to view past snapshots. Most list/board commands accept ce_display (Off/Mix/Only, default Off) to hide or show Category Extensions RemixMod modes, and many accept a country filter.
+        If someone asks for the website / site / link to see how many world records (WRs) a player has, or where to check WR counts, answer with https://stats.googlesnakemods.com/ (FastSnakeStats).
         I can also caption images and GIFs like esmBot: use /caption, or right-click a message and choose Select Image first.
         Portal mode has twice the fruit and each one you eat makes the head escape out of it's matching fruit, and spawns 2 additional fruit.
         Yin yang is the mode with 2 snakes, where one is just an inverted snake. In twin mode, the snake switches places between head and tail only when it eats an apple.
@@ -226,6 +303,9 @@ def get_response(user_input: str, user="Nobody", status_notify=None) -> str:
         if not cleaned:
             return "Use `/wallall` or paste pudding copy (`pattern` plus a 90-cell 1/2 grid)."
         return wall.check_pattern(cleaned)
+
+    if wants_fastsnakestats_link(user_input):
+        return FASTSNAKESTATS_URL
 
     if "how" in lowered:
         if "timer" in lowered:
