@@ -97,13 +97,24 @@ _HOW_MANY_RECORDS_RE = re.compile(
     r"how\s+many\s+(?:world\s+)?(?:records?|wrs?)\s+(?:is|are)\s+(.+?)\s+(?:holding|holding\s+right\s+now)\b"
     r"|"
     r"(?:what(?:'s|s| is)|whats)\s+(.+?)(?:'s|s)?\s+(?:world\s+)?(?:record|wr)\s+count\b"
+    r"|"
+    # Short form: "how many wrs X" / "how many records X"
+    r"how\s+many\s+(?:world\s+)?(?:records?|wrs?)\s+(.+)"
     r")"
     r"[\s?!.]*$"
 )
 
+_NAME_TRAILING_JUNK_RE = re.compile(
+    r"(?i)\s+(?:have|got|hold|holding|does|has|is|are|again)\s*$"
+)
+_REJECT_NAMES = frozenset({
+    "you", "i", "we", "they", "someone", "anyone", "people",
+    "does", "has", "is", "are", "the", "a", "an",
+})
+
 
 def parse_how_many_records_player(text: str) -> Optional[str]:
-    """Extract player name from 'how many records does X have?' style questions."""
+    """Extract player name from 'how many records does X have?' / 'how many wrs X'."""
     raw = (text or "").strip()
     if not raw:
         return None
@@ -117,12 +128,12 @@ def parse_how_many_records_player(text: str) -> Optional[str]:
     if not name:
         return None
     name = name.strip(" \t\"'`.,!?")
-    # Drop leading articles
-    name = re.sub(r"(?i)^(the|a|an)\s+", "", name).strip()
+    name = _NAME_TRAILING_JUNK_RE.sub("", name).strip(" \t\"'`.,!?")
+    # Drop leading articles / question glue
+    name = re.sub(r"(?i)^(the|a|an|does|has)\s+", "", name).strip()
     if not name or len(name) > 64:
         return None
-    # Avoid matching the website question ("how many records you have" without a name subject)
-    if name.lower() in {"you", "i", "we", "they", "someone", "anyone", "people"}:
+    if name.lower() in _REJECT_NAMES:
         return None
     return name
 
