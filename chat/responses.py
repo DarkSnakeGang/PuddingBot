@@ -5,6 +5,7 @@ import wall
 import os
 import re
 import asyncio
+from typing import Optional
 
 POI_EMOJI_ID = os.getenv("POI_EMOJI_ID", "1362102081502318742")
 POI_EMOJI = f"<:poi:{POI_EMOJI_ID}>"
@@ -86,6 +87,44 @@ def wants_fastsnakestats_link(text: str) -> bool:
         and any(word in lowered for word in ("link", "website", "site", "url", "where", "what"))
     )
     return asks_for_fss_by_name or (asks_for_site and mentions_records)
+
+
+_HOW_MANY_RECORDS_RE = re.compile(
+    r"(?i)^\s*(?:hey\s+)?(?:puddingbot\s+|pudding\s+)?"
+    r"(?:"
+    r"how\s+many\s+(?:world\s+)?(?:records?|wrs?)\s+(?:does|has)\s+(.+?)\s+(?:have|got|hold|holding)\b"
+    r"|"
+    r"how\s+many\s+(?:world\s+)?(?:records?|wrs?)\s+(?:is|are)\s+(.+?)\s+(?:holding|holding\s+right\s+now)\b"
+    r"|"
+    r"(?:what(?:'s|s| is)|whats)\s+(.+?)(?:'s|s)?\s+(?:world\s+)?(?:record|wr)\s+count\b"
+    r")"
+    r"[\s?!.]*$"
+)
+
+
+def parse_how_many_records_player(text: str) -> Optional[str]:
+    """Extract player name from 'how many records does X have?' style questions."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    # Strip bot mention so pings still work: <@id> how many...
+    cleaned = re.sub(r"<@!?\d+>", " ", raw)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    match = _HOW_MANY_RECORDS_RE.match(cleaned)
+    if not match:
+        return None
+    name = next((g for g in match.groups() if g), None)
+    if not name:
+        return None
+    name = name.strip(" \t\"'`.,!?")
+    # Drop leading articles
+    name = re.sub(r"(?i)^(the|a|an)\s+", "", name).strip()
+    if not name or len(name) > 64:
+        return None
+    # Avoid matching the website question ("how many records you have" without a name subject)
+    if name.lower() in {"you", "i", "we", "they", "someone", "anyone", "people"}:
+        return None
+    return name
 
 
 def is_allowed_poi_message(content: str) -> bool:
@@ -251,6 +290,7 @@ def clear_context():
 
         I can help users look up world records, player statistics, historical data, Chronicle narratives, and statistics-explorer analytics from the FastSnakeStats database. Commands that take a date support optional historical date parameters to view past snapshots. Most list/board commands accept ce_display (Off/Mix/Only, default Off) to hide or show Category Extensions RemixMod modes, and many accept a country filter.
         If someone asks for the website / site / link to see how many world records (WRs) a player has, or where to check WR counts, answer with https://stats.googlesnakemods.com/ (FastSnakeStats).
+        If someone asks how many records / WRs a named player has (e.g. "how many records does SpaceDoge have?"), that is handled as a /player lookup — do not invent a count.
         I can also caption images and GIFs like esmBot: use /caption, or right-click a message and choose Select Image first.
         Portal mode has twice the fruit and each one you eat makes the head escape out of it's matching fruit, and spawns 2 additional fruit.
         Yin yang is the mode with 2 snakes, where one is just an inverted snake. In twin mode, the snake switches places between head and tail only when it eats an apple.

@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 import discord
 from discord import Intents, Message, Object, NotFound, Forbidden, HTTPException, File
 from discord.ext import commands
-from chat import get_response, is_allowed_poi_message
+from chat import get_response, is_allowed_poi_message, parse_how_many_records_player
 import data_management as dm
 import asyncio
 import wall
@@ -138,6 +138,12 @@ async def send_message(message: Message, user_message: str, user="Nobody") -> No
                 )
             return
 
+        # "how many records does X have?" → /player profile embed
+        queried_player = parse_how_many_records_player(user_message)
+        if queried_player:
+            await _send_player_records_lookup(message, target, queried_player)
+            return
+
         # Run sync AI / response logic off the event loop so status messages can send
         response = await asyncio.to_thread(
             get_response, user_message, user, status_notify
@@ -156,6 +162,49 @@ async def send_message(message: Message, user_message: str, user="Nobody") -> No
             await target.send(response)
     except Exception as e:
         print(e)
+
+
+async def _send_player_records_lookup(message: Message, target, queried_player: str) -> None:
+    """Resolve a natural-language player WR count question to the /player embed."""
+    from github_cache_fetcher import github_cache_fetcher
+    from cogs.fastsnakestats import PlayerPaginationView
+
+    cog = bot.get_cog("FastSnakeStats")
+    if cog is None:
+        await target.send("❌ Player lookup is unavailable right now.")
+        return
+
+    needle = queried_player.strip()
+    matches = await github_cache_fetcher.search_player_names(needle, limit=10)
+    resolved = None
+    if matches:
+        exact = next((n for n in matches if n.lower() == needle.lower()), None)
+        starts = next((n for n in matches if n.lower().startswith(needle.lower())), None)
+        resolved = exact or starts or matches[0]
+    else:
+        # Fall back to the typed name; get_player_data does case-insensitive match
+        resolved = needle
+
+    player_data = await cog.get_player_data(resolved)
+    if not player_data:
+        hint = ""
+        if matches and matches[0].lower() != resolved.lower():
+            hint = f" Did you mean **{matches[0]}**?"
+        await target.send(f"❌ No data found for player: {queried_player}.{hint}")
+        return
+
+    embed = cog.create_player_embed(player_data, page=0)
+    activity_len = len(player_data.get("recent_activity") or [])
+    total_pages = max(1, (activity_len + 4) // 5)
+    if total_pages > 1:
+        view = PlayerPaginationView(
+            player_data,
+            message.author.id,
+            embed_factory=cog.create_player_embed,
+        )
+        await target.send(embed=embed, view=view)
+    else:
+        await target.send(embed=embed)
 
 # Startup for the bot
 @bot.event
