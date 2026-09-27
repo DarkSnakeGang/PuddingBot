@@ -272,7 +272,7 @@ def clear_context():
         - /record - Get world records for specific game settings (game mode including CE RemixMod levels, apple amount including Tally, speed, size, run mode, optional date)
         - /leaderboards - Full WR table for a chosen apple count, speed, and size (optional date; ce_display Off/Mix/Only, default Off)
         - /available-dates - List available historical dates for viewing past records
-        - /player - Player profile (name, optional date; WR count/%, career, peaks, longevity, improving and mastery all follow ce_display, default Off = CE excluded; Chronicle empire arc only with Mix), or explorer holds with holds=all|present|old|latest|mastery + optional tied + category filters + ce_display (Timed = non-HS; Mastery also supports High score modes only / Excluding Peaceful)
+        - /player - Player profile (name, optional date; main stats are non-CE with a separate Category Extensions section and combined WR total, plus Chronicle empire arc), or explorer holds with holds=all|present|old|latest|mastery + optional tied + category filters (Timed = non-HS; Mastery also supports High score modes only / Excluding Peaceful)
         - /career - Career WR-days leaderboard (all / untied / tied; optional player_name search + ce_display + country; shows best standing)
         - /country - Country WR-days leaderboard (all / untied / tied; search / country filter; ce_display)
         - /mastery - Mastery Challenge All Apples leaderboard (optional player + category filters + ce_display + country; High score modes only / Excluding Peaceful)
@@ -299,7 +299,7 @@ def clear_context():
         - Select Image - Right-click a message → Apps → Select Image, then /caption uses it
         - /wallall - Solve a small-board Wall All Ham Cycle or Ham Path. Paste pudding copy (`pattern 12…`) or a 90-cell 0/1 or 1/2 grid
 
-        I can help users look up world records, player statistics, historical data, Chronicle narratives, and statistics-explorer analytics from the FastSnakeStats database. Commands that take a date support optional historical date parameters to view past snapshots. Every stats command accepts ce_display (Off/Mix/Only, default Off): Off excludes Category Extensions RemixMod level modes (Chess, Candy, Burger, Cat, Mexico, Bomb, Temp Wall, Ghost) from all counts, Only shows just those, Mix combines both. Many commands also accept a country filter.
+        I can help users look up world records, player statistics, historical data, Chronicle narratives, and statistics-explorer analytics from the FastSnakeStats database. Commands that take a date support optional historical date parameters to view past snapshots. Most stats commands accept ce_display (Off/Mix/Only, default Off; /player instead shows non-CE and CE side by side): Off excludes Category Extensions RemixMod level modes (Chess, Candy, Burger, Cat, Mexico, Bomb, Temp Wall, Ghost) from all counts, Only shows just those, Mix combines both. Many commands also accept a country filter.
         If someone asks for the website / site / link to see how many world records (WRs) a player has, or where to check WR counts, answer with https://stats.googlesnakemods.com/ (FastSnakeStats).
         If someone asks how many records / WRs a named player has (e.g. "how many records does SpaceDoge have?"), that is handled as a /player lookup — do not invent a count.
         I can also caption images and GIFs like esmBot: use /caption, or right-click a message and choose Select Image first.

@@ -172,11 +172,9 @@ class FastSnakeStats(commands.Cog):
         self,
         player_name: str,
         date: Optional[str] = None,
-        ce_display: Optional[str] = None,
     ) -> Optional[Dict]:
-        """Player profile; every count honours ce_display (default Off = no CE)."""
+        """Player profile with non-CE and CE stats kept side by side."""
         try:
-            ce = ce_aggregates.normalize_ce(ce_display or CE_DISPLAY_DEFAULT)
             if date and not await github_cache_fetcher.is_date_available(date):
                 return None
 
@@ -190,24 +188,19 @@ class FastSnakeStats(commands.Cog):
 
             player_name_lower = player_name.lower()
             player_records = []
-            total_runs = 0
-            total_world_records = 0
-            excluded_runs = 0
+            held = {"main": 0, "ce": 0}
+            boards = {"main": 0, "ce": 0}
 
             for settings_key, runs in world_records.items():
                 if not runs:
                     continue
-                allowed = dm.category_allowed_for_ce_display(settings_key, ce)
-                if allowed:
-                    total_world_records += len(runs)
+                side = "main" if dm.category_allowed_for_ce_display(settings_key, "Off") else "ce"
+                boards[side] += len(runs)
                 for run in runs:
                     name = dm.get_player_name(run) if run else None
                     if not name or name.lower() != player_name_lower:
                         continue
-                    if not allowed:
-                        excluded_runs += 1
-                        continue
-                    total_runs += 1
+                    held[side] += 1
                     player_records.append({
                         'run': run,
                         'settings': settings_key,
@@ -218,68 +211,61 @@ class FastSnakeStats(commands.Cog):
             display_name = (all_peak_stats or {}).get('name') or player_name
             player_id = (all_peak_stats or {}).get('id')
             snapshot_date = date or await github_cache_fetcher.get_most_recent_date()
-            current_pct = (
-                round((total_runs / total_world_records) * 100, 2)
-                if total_world_records > 0 else 0.0
+
+            all_holds = await github_cache_fetcher.get_longevity("all") or []
+            earliest, latest = await self._explorer_date_range()
+            views: Dict[str, Dict] = {}
+            for side, ce in (("main", "Off"), ("ce", "Only")):
+                holds = ce_aggregates.filter_holds(all_holds, ce)
+                career = ce_aggregates.player_career(holds, player_id, display_name)
+                views[side] = {
+                    'held': held[side],
+                    'boards': boards[side],
+                    'percentage': (
+                        round(held[side] / boards[side] * 100, 2) if boards[side] else 0.0
+                    ),
+                    'peak_stats': ce_aggregates.player_peak_stats(
+                        holds, earliest, latest, player_id, display_name
+                    ),
+                    'career': career,
+                    'longevity_best': (
+                        {'allTime': career.get('bestAll'), 'standing': career.get('bestStanding')}
+                        if career else None
+                    ),
+                    'improving': (
+                        ce_aggregates.player_improving(holds, latest, player_id, display_name)
+                        if latest else None
+                    ),
+                    'mastery': await self._get_profile_mastery(player_id, display_name, ce),
+                }
+
+            empire = await github_cache_fetcher.get_chronicle_empire(
+                player_id=player_id, player_name=display_name
             )
 
-            if ce == "Mix":
-                peak_stats = all_peak_stats
-                career = await github_cache_fetcher.get_player_career(
-                    player_id=player_id, player_name=display_name
-                )
-                longevity_best = await github_cache_fetcher.get_player_longevity_best(
-                    player_id=player_id, player_name=display_name
-                )
-                improving = await github_cache_fetcher.get_player_improving(
-                    player_id=player_id, player_name=display_name
-                )
-                empire = await github_cache_fetcher.get_chronicle_empire(
-                    player_id=player_id, player_name=display_name
-                )
-            else:
-                holds = await self._ce_filtered_holds(ce) or []
-                earliest, latest = await self._explorer_date_range()
-                peak_stats = ce_aggregates.player_peak_stats(
-                    holds, earliest, latest, player_id, display_name
-                )
-                career = ce_aggregates.player_career(holds, player_id, display_name)
-                longevity_best = (
-                    {'allTime': career.get('bestAll'), 'standing': career.get('bestStanding')}
-                    if career else None
-                )
-                improving = (
-                    ce_aggregates.player_improving(holds, latest, player_id, display_name)
-                    if latest else None
-                )
-                # Chronicle empire arcs are built across every mode
-                empire = None
-
-            mastery = await self._get_profile_mastery(player_id, display_name, ce)
-
             if not any((
-                player_records, excluded_runs, all_peak_stats,
-                peak_stats, career, mastery, empire,
+                player_records, all_peak_stats, empire,
+                views['main']['career'], views['ce']['career'],
+                views['main']['mastery'],
             )):
                 return None
 
             player_records.sort(key=lambda x: dm.get_run_date(x['run']), reverse=True)
+            total_held = held['main'] + held['ce']
+            total_boards = boards['main'] + boards['ce']
 
             return {
                 'player_name': display_name,
                 'player_id': player_id,
-                'world_records_held': total_runs,
-                'current_percentage': current_pct if player_records else 0.0,
-                'total_world_records': total_world_records,
-                'excluded_ce_records': excluded_runs,
-                'ce_display': ce,
+                'world_records_held': total_held,
+                'current_percentage': (
+                    round(total_held / total_boards * 100, 2) if total_boards else 0.0
+                ),
+                'total_world_records': total_boards,
+                'main': views['main'],
+                'ce': views['ce'],
                 'recent_activity': player_records,
                 'date': snapshot_date,
-                'peak_stats': peak_stats,
-                'career': career,
-                'longevity_best': longevity_best,
-                'improving': improving,
-                'mastery': mastery,
                 'empire': empire,
             }
 
@@ -1405,6 +1391,39 @@ class FastSnakeStats(commands.Cog):
         lines.append("_Use `/chronicle section:Empire` for the full arc._")
         return "\n".join(lines) if lines else "No Chronicle empire arc yet."
 
+    def _format_player_ce_summary(self, ce: Dict) -> str:
+        """Compact CE stats block; empty when the player has no CE history."""
+        career = ce.get('career') or {}
+        mastery = ce.get('mastery') or {}
+        if not (ce.get('held') or career or mastery.get('total')):
+            return ""
+        lines = [f"**WRs now:** {ce.get('held', 0)} • {ce.get('percentage', 0.0):.2f}% of CE boards"]
+        if career:
+            lines.append(
+                f"**WR-days:** {career.get('wrDays', 0)} · **Holds:** {career.get('holds', 0)} · "
+                f"**Still standing:** {career.get('standingHolds', 0)}"
+            )
+        peaks = ce.get('peak_stats') or {}
+        peak_records = peaks.get('peakRecords') or {}
+        peak_pct = peaks.get('peakPercentage') or {}
+        if peak_records.get('count'):
+            lines.append(
+                f"**Peak:** {peak_records['count']} on {peak_records.get('date')} · "
+                f"{peak_pct.get('percentage', 0):.2f}% on {peak_pct.get('date')}"
+            )
+        if career.get('bestAll'):
+            lines.append(self._format_player_longevity_line("Best hold", career['bestAll']))
+        if mastery.get('total'):
+            lines.append(f"**Mastery:** {mastery['total']} / {mastery.get('boardCount')} boards")
+        improving = ce.get('improving') or {}
+        gains = [
+            f"{window} +{improving[window]['delta']}"
+            for window in ("7d", "30d", "90d", "365d") if improving.get(window)
+        ]
+        if gains:
+            lines.append(f"**Improving:** {' · '.join(gains)}")
+        return "\n".join(lines)
+
     def create_player_embed(self, player_data: Dict, page: int = 0) -> discord.Embed:
         """Create a rich embed for player display with pagination"""
         activity = player_data.get('recent_activity') or []
@@ -1412,29 +1431,26 @@ class FastSnakeStats(commands.Cog):
         total_pages = max(1, (len(activity) + runs_per_page - 1) // runs_per_page)
         page = max(0, min(page, total_pages - 1))
 
-        ce = player_data.get('ce_display') or CE_DISPLAY_DEFAULT
-        ce_suffix = {"Off": "", "Only": " (CE only)", "Mix": " (incl. CE)"}.get(ce, "")
+        main = player_data.get('main') or {}
+        ce = player_data.get('ce') or {}
         embed = discord.Embed(
-            title=f"👤 Player Profile - {player_data['player_name']}{ce_suffix}",
+            title=f"👤 Player Profile - {player_data['player_name']}",
             color=0x0099ff,
             timestamp=datetime.now()
         )
 
-        current_pct = player_data.get('current_percentage')
-        pct_text = (
-            f" • **{current_pct:.2f}%**"
-            if current_pct is not None else ""
-        )
         snapshot_lines = [
-            f"**World Records:** {player_data['world_records_held']}{pct_text}",
-            f"**As of:** `{player_data['date']}`",
+            f"**World Records:** {main.get('held', 0)} • **{main.get('percentage', 0.0):.2f}%**",
         ]
-        excluded = player_data.get('excluded_ce_records') or 0
-        if excluded:
-            other = "CE" if ce == "Off" else "non-CE"
+        if ce.get('held'):
             snapshot_lines.append(
-                f"_+{excluded} {other} WR(s) not counted — use `ce_display` to include them._"
+                f"**CE World Records:** {ce['held']} • **{ce.get('percentage', 0.0):.2f}%**"
             )
+            snapshot_lines.append(
+                f"**Combined:** {player_data['world_records_held']} • "
+                f"**{player_data.get('current_percentage', 0.0):.2f}%**"
+            )
+        snapshot_lines.append(f"**As of:** `{player_data['date']}`")
         embed.add_field(
             name="📊 Current Snapshot",
             value="\n".join(snapshot_lines),
@@ -1443,34 +1459,23 @@ class FastSnakeStats(commands.Cog):
 
         embed.add_field(
             name="📚 Career",
-            value=self._format_player_career_stats(
-                player_data.get('peak_stats'),
-                player_data.get('career'),
-            ),
+            value=self._format_player_career_stats(main.get('peak_stats'), main.get('career')),
             inline=False
         )
 
         embed.add_field(
             name="🏅 Mastery",
-            value=self._format_player_mastery_stats(player_data.get('mastery')),
+            value=self._format_player_mastery_stats(main.get('mastery')),
             inline=False
         )
 
         embed.add_field(
             name="📈 Peaks",
-            value=self._format_player_peak_stats(player_data.get('peak_stats')),
+            value=self._format_player_peak_stats(main.get('peak_stats')),
             inline=False
         )
 
-        empire = player_data.get('empire')
-        if empire:
-            embed.add_field(
-                name="🏰 Empire",
-                value=self._format_player_empire(empire),
-                inline=False
-            )
-
-        longevity = player_data.get('longevity_best') or {}
+        longevity = main.get('longevity_best') or {}
         embed.add_field(
             name="⏳ Longevity",
             value=(
@@ -1481,11 +1486,26 @@ class FastSnakeStats(commands.Cog):
             inline=False
         )
 
-        improving = player_data.get('improving')
-        if improving:
+        if main.get('improving'):
             embed.add_field(
                 name="🚀 Improving",
-                value=self._format_player_improving(improving),
+                value=self._format_player_improving(main['improving']),
+                inline=False
+            )
+
+        ce_summary = self._format_player_ce_summary(ce)
+        if ce_summary:
+            embed.add_field(
+                name="🧩 Category Extensions",
+                value=ce_summary,
+                inline=False
+            )
+
+        empire = player_data.get('empire')
+        if empire:
+            embed.add_field(
+                name="🏰 Empire (all modes)",
+                value=self._format_player_empire(empire),
                 inline=False
             )
 
@@ -1517,10 +1537,7 @@ class FastSnakeStats(commands.Cog):
             )
 
         embed.set_footer(
-            text=(
-                f"Data from FastSnakeStats • CE: {ce} • {player_data['date']} • "
-                f"Page {page + 1}/{total_pages}"
-            )
+            text=f"Data from FastSnakeStats • {player_data['date']} • Page {page + 1}/{total_pages}"
         )
         return embed
 
@@ -3308,7 +3325,6 @@ class FastSnakeStats(commands.Cog):
         speed="Optional speed filter (holds/Mastery list)",
         size="Optional size filter (holds/Mastery list)",
         run_mode="Optional run mode filter; Timed = non-HS (WR holds list)",
-        ce_display="Category Extensions: Off (default) hides CE, Only = CE only, Mix = both",
     )
     @app_commands.choices(
         holds=[
@@ -3323,7 +3339,6 @@ class FastSnakeStats(commands.Cog):
             app_commands.Choice(name="Untied only", value="untied"),
             app_commands.Choice(name="Tied only", value="tied"),
         ],
-        ce_display=CE_DISPLAY_CHOICES,
     )
     @app_commands.autocomplete(
         date=player_date_autocomplete,
@@ -3346,7 +3361,6 @@ class FastSnakeStats(commands.Cog):
         speed: Optional[str] = None,
         size: Optional[str] = None,
         run_mode: Optional[str] = None,
-        ce_display: Optional[app_commands.Choice[str]] = None,
     ):
         """Get player statistics and recent activity"""
         await interaction.response.defer()
@@ -3362,7 +3376,7 @@ class FastSnakeStats(commands.Cog):
                     apple_amount=apple_amount,
                     speed=speed,
                     size=size,
-                    ce_display=ce_display.value if ce_display else CE_DISPLAY_DEFAULT,
+                    ce_display="Mix",
                 )
                 data = await self._get_player_mastery_items(
                     player_id=player_id,
@@ -3409,7 +3423,7 @@ class FastSnakeStats(commands.Cog):
                     speed=speed,
                     size=size,
                     run_mode=run_mode,
-                    ce_display=ce_display.value if ce_display else CE_DISPLAY_DEFAULT,
+                    ce_display="Mix",
                 )
                 filter_label = self._format_category_filters(
                     **filters, tied=tied_mode if hold_mode == "present" else None
@@ -3447,11 +3461,7 @@ class FastSnakeStats(commands.Cog):
                     await interaction.followup.send(embed=embed)
                 return
 
-            player_data = await self.get_player_data(
-                player_name,
-                date,
-                ce_display=ce_display.value if ce_display else CE_DISPLAY_DEFAULT,
-            )
+            player_data = await self.get_player_data(player_name, date)
             
             if not player_data:
                 if date:
@@ -5265,13 +5275,13 @@ class FastSnakeStats(commands.Cog):
         ),
         (
             "Players",
-            "- `/player` — profile, holds, or Mastery boards (`ce_display`)\n"
+            "- `/player` — profile (non-CE and CE stats side by side), holds, or Mastery boards\n"
             "- `/compare` — unique vs shared WR holds between two players\n"
             "- `/career` — career WR-days (search / country / best standing)\n"
             "- `/country` — country WR-days leaderboard\n"
             "- `/mastery` — All Apples challenge leaderboard or one player\n"
             "- `/chronicle` — era newspaper, empire arcs, board wars, debuts\n"
-            "_Every stats command takes `ce_display`: Off (default) hides CE levels, Only = CE only, Mix = both._",
+            "_Most stats commands take `ce_display`: Off (default) hides CE levels, Only = CE only, Mix = both._",
         ),
         (
             "Statistics explorer",
