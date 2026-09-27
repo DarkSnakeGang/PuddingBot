@@ -264,6 +264,7 @@ class FastSnakeStats(commands.Cog):
                 'total_world_records': total_boards,
                 'main': views['main'],
                 'ce': views['ce'],
+                'all_peak_stats': all_peak_stats,
                 'recent_activity': player_records,
                 'date': snapshot_date,
                 'empire': empire,
@@ -1424,6 +1425,43 @@ class FastSnakeStats(commands.Cog):
             lines.append(f"**Improving:** {' · '.join(gains)}")
         return "\n".join(lines)
 
+    def _format_player_combined_summary(self, player_data: Dict) -> str:
+        """Non-CE + CE totals (peaks come from all-mode player stats)."""
+        main = player_data.get('main') or {}
+        ce = player_data.get('ce') or {}
+        lines = [
+            f"**WRs now:** {player_data.get('world_records_held', 0)} • "
+            f"{player_data.get('current_percentage', 0.0):.2f}%"
+        ]
+        careers = [c for c in (main.get('career'), ce.get('career')) if c]
+        if careers:
+            lines.append(
+                f"**WR-days:** {sum(c.get('wrDays') or 0 for c in careers)} · "
+                f"**Holds:** {sum(c.get('holds') or 0 for c in careers)} · "
+                f"**Still standing:** {sum(c.get('standingHolds') or 0 for c in careers)}"
+            )
+        peaks = player_data.get('all_peak_stats') or {}
+        peak_records = peaks.get('peakRecords') or {}
+        if peak_records.get('count'):
+            lines.append(f"**Peak:** {peak_records['count']} on {peak_records.get('date')}")
+        masteries = [m for m in (main.get('mastery'), ce.get('mastery')) if m]
+        if masteries:
+            lines.append(
+                f"**Mastery:** {sum(m.get('total') or 0 for m in masteries)} / "
+                f"{sum(m.get('boardCount') or 0 for m in masteries)} boards"
+            )
+        gains = []
+        for window in ("7d", "30d", "90d", "365d"):
+            delta = sum(
+                ((view.get('improving') or {}).get(window) or {}).get('delta', 0)
+                for view in (main, ce)
+            )
+            if delta:
+                gains.append(f"{window} {'+' if delta > 0 else ''}{delta}")
+        if gains:
+            lines.append(f"**Improving:** {' · '.join(gains)}")
+        return "\n".join(lines)
+
     def create_player_embed(self, player_data: Dict, page: int = 0) -> discord.Embed:
         """Create a rich embed for player display with pagination"""
         activity = player_data.get('recent_activity') or []
@@ -1442,9 +1480,10 @@ class FastSnakeStats(commands.Cog):
         snapshot_lines = [
             f"**World Records:** {main.get('held', 0)} • **{main.get('percentage', 0.0):.2f}%**",
         ]
-        if ce.get('held'):
+        ce_summary = self._format_player_ce_summary(ce)
+        if ce_summary:
             snapshot_lines.append(
-                f"**CE World Records:** {ce['held']} • **{ce.get('percentage', 0.0):.2f}%**"
+                f"**CE World Records:** {ce.get('held', 0)} • **{ce.get('percentage', 0.0):.2f}%**"
             )
             snapshot_lines.append(
                 f"**Combined:** {player_data['world_records_held']} • "
@@ -1493,11 +1532,15 @@ class FastSnakeStats(commands.Cog):
                 inline=False
             )
 
-        ce_summary = self._format_player_ce_summary(ce)
         if ce_summary:
             embed.add_field(
                 name="🧩 Category Extensions",
                 value=ce_summary,
+                inline=False
+            )
+            embed.add_field(
+                name="Σ Combined (non-CE + CE)",
+                value=self._format_player_combined_summary(player_data),
                 inline=False
             )
 
