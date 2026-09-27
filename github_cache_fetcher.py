@@ -54,8 +54,7 @@ class GitHubCacheFetcher:
         self._local_chronicle_path = os.path.join(
             self._local_fss_root, 'metadata', 'chronicle.json'
         )
-        self.fallback_to_api = True
-        # name -> {'data', 'expires', 'attempted'} (monotonic seconds)
+        # name -> {'data', 'expires' (monotonic seconds), 'loads' (attempt counter)}
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
         # date -> derived day snapshot, valid for `_snapshots_source` only
@@ -97,15 +96,16 @@ class GitHubCacheFetcher:
         force_refresh: bool = False,
     ) -> Optional[Dict]:
         """Serve `name` from memory; reload at most once at a time, backing off on failure."""
-        started = time.monotonic()
         entry = self._cache.get(name)
-        if not force_refresh and entry and started < entry['expires']:
+        if not force_refresh and entry and time.monotonic() < entry['expires']:
             return entry['data']
+        seen = entry['loads'] if entry else 0
 
         lock = self._locks.setdefault(name, asyncio.Lock())
         async with lock:
             entry = self._cache.get(name)
-            if entry and entry['attempted'] >= started:
+            loads = entry['loads'] if entry else 0
+            if loads != seen:
                 return entry['data']
             try:
                 data = await loader()
@@ -118,13 +118,13 @@ class GitHubCacheFetcher:
                 self._cache[name] = {
                     'data': previous,
                     'expires': now + FAILURE_RETRY_SECONDS,
-                    'attempted': now,
+                    'loads': loads + 1,
                 }
                 return previous
             self._cache[name] = {
                 'data': data,
                 'expires': now + CACHE_TTL_SECONDS,
-                'attempted': now,
+                'loads': loads + 1,
             }
             return data
 

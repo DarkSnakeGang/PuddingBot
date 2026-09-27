@@ -192,3 +192,4 @@ if __name__ == "__main__":
         print("\n🎉 All tests passed! FastSnakeStats integration is working correctly.")
     else:
         print("\n💥 Some tests failed. Please check the errors above.")
+    sys.exit(0 if success else 1)

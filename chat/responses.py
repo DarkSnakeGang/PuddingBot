@@ -213,27 +213,6 @@ def get_random_funny_gif(api_key, emotion):
         print(f"Klipy GIF lookup failed: {type(e).__name__}")
         return "GIF lookup failed, try again later."
 
-src_url = 'https://www.speedrun.com/api/v1/games/'
-snake_game = "o1y9pyk6"
-snake_game_ce = "9dow0go1"
-
-sg_details = {}
-ce_details = {}
-
-def generate_payload_metadata():
-    sg_details["vars"] = rq.get(f"{src_url}{snake_game}/variables").json()
-    sg_details["cats"] = rq.get(f"{src_url}{snake_game}/categories?embed=game").json()
-    sg_details["lvls"] = rq.get(f"{src_url}{snake_game}/levels").json()
-    ce_details["vars"] = rq.get(f"{src_url}{snake_game_ce}/variables").json()
-    ce_details["cats"] = rq.get(f"{src_url}{snake_game_ce}/categories?embed=game").json()
-    ce_details["lvls"] = rq.get(f"{src_url}{snake_game_ce}/levels").json()
-
-def request_record(gameID, variable_IDs, category_IDs):
-    pass
-
-def generate_payload():
-    pass
-
 def clear_context():
     return [{
         "role": "system",

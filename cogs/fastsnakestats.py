@@ -51,8 +51,6 @@ class FastSnakeStats(commands.Cog):
     
     def __init__(self, bot):
         self.bot = bot
-        self.cache_data = {}
-        self.last_cache_update = None
         self.monthly_oldest_report_task.start()
         self.wr_watch_task.start()
 
@@ -2034,20 +2032,6 @@ class FastSnakeStats(commands.Cog):
             bits.append(f"holds:{holds}")
         return " • ".join(bits)
 
-    def _any_category_filters(
-        self,
-        game_mode: Optional[str] = None,
-        apple_amount: Optional[str] = None,
-        speed: Optional[str] = None,
-        size: Optional[str] = None,
-        run_mode: Optional[str] = None,
-        ce_display: Optional[str] = None,
-        country: Optional[str] = None,
-    ) -> bool:
-        # ce_display defaults to Off which still filters — treat non-Mix as a filter
-        ce = ce_display if ce_display is not None else CE_DISPLAY_DEFAULT
-        return any((game_mode, apple_amount, speed, size, run_mode, country)) or ce != "Mix"
-
     def _filter_category_rows(
         self,
         items: List[Dict],
@@ -2781,9 +2765,6 @@ class FastSnakeStats(commands.Cog):
             f"**{item.get('days', '?')}** days • {display_time} • "
             f"{item.get('start', '?')} → {end_label}{standing}"
         )
-
-    def create_unicorns_embed(self, items: List[Dict], page: int = 0) -> discord.Embed:
-        return self.create_legends_embed(items, page=page, show="unicorns")
 
     def create_legends_embed(
         self, items: List[Dict], page: int = 0, show: str = "legends", filter_label: str = ""
