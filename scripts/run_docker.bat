@@ -13,6 +13,10 @@ if not exist .env (
 
 echo Building Docker image...
 docker build -t puddingbot .
+if errorlevel 1 (
+  echo ERROR: docker build failed; the running container was left untouched.
+  exit /b 1
+)
 
 echo Stopping and removing existing container...
 docker rm -f puddingbot-container 2>nul

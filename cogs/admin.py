@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from typing import Awaitable, Callable, Optional, Set
 
 import discord
@@ -47,6 +48,7 @@ def _run_command(args: list[str], timeout: int) -> subprocess.CompletedProcess[s
         text=True,
         timeout=timeout,
         check=False,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
     )
 
 
@@ -54,15 +56,14 @@ async def _run_command_async(args: list[str], timeout: int) -> subprocess.Comple
     return await asyncio.to_thread(_run_command, args, timeout)
 
 
-def _desired_ollama_model() -> str:
-    """Resolve model after git sync: env wins, else default from chat/gpt.py on disk."""
+def _desired_ollama_model(gpt_source: str) -> str:
+    """Env wins, else the default in the incoming chat/gpt.py source."""
     env_model = os.getenv("OLLAMA_MODEL")
     if env_model:
         return env_model.strip().strip('"').strip("'")
 
     try:
-        with open(os.path.join(APP_DIR, "chat", "gpt.py"), encoding="utf-8") as handle:
-            text = handle.read()
+        text = gpt_source
         match = re.search(
             r'OLLAMA_MODEL\s*=\s*os\.getenv\(\s*["\']OLLAMA_MODEL["\']\s*,\s*["\']([^"\']+)["\']\s*\)',
             text,
@@ -70,7 +71,7 @@ def _desired_ollama_model() -> str:
         if match:
             return match.group(1)
     except Exception as e:
-        print(f"Could not read OLLAMA_MODEL from chat/gpt.py: {e}")
+        print(f"Could not parse OLLAMA_MODEL from chat/gpt.py: {e}")
 
     return DEFAULT_OLLAMA_MODEL
 
@@ -109,7 +110,7 @@ async def _ensure_ollama_model(model: str, set_status: StatusCallback) -> tuple[
 
     await set_status(
         f"Updating…\n"
-        f"- Code synced\n"
+        f"- Dependencies installed\n"
         f"- Pulling Ollama model `{model}` (this can take several minutes)…"
     )
 
@@ -137,7 +138,7 @@ async def _git_full(ref: str = "HEAD") -> str:
 
 async def _apply_repo_update(set_status: StatusCallback) -> tuple[bool, bool, str]:
     """
-    Fetch + hard-reset to origin/branch, install deps, sync Ollama model.
+    Fetch, install the incoming deps + Ollama model, then hard-reset to origin/branch.
 
     Returns (success, should_restart, message).
     Caller restarts the process when should_restart is True.
@@ -161,9 +162,46 @@ async def _apply_repo_update(set_status: StatusCallback) -> tuple[bool, bool, st
             f"Already up to date on `{before_hash}` (`origin/{GIT_BRANCH}`)."
         )
 
+    # Install deps and the model for the *incoming* code before touching the
+    # working tree, so a failure leaves the old code + deps fully intact
     await set_status(
         f"Updating from GitHub…\n"
         f"- Fetched `origin/{GIT_BRANCH}`\n"
+        f"- Installing dependencies"
+    )
+    requirements = await _run_command_async(["git", "show", f"{remote_ref}:requirements.txt"], 30)
+    if requirements.returncode != 0:
+        return False, False, "Update failed: could not read the new requirements.txt."
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as handle:
+        handle.write(requirements.stdout)
+        requirements_path = handle.name
+    try:
+        pip_result = await _run_command_async(
+            [sys.executable, "-m", "pip", "install", "-r", requirements_path],
+            timeout=300,
+        )
+    finally:
+        os.unlink(requirements_path)
+    if pip_result.returncode != 0:
+        error_output = (pip_result.stderr or pip_result.stdout or "Unknown error").strip()
+        return False, False, (
+            "Dependency install failed; code was not changed "
+            "(bot was not restarted):\n"
+            f"```\n{error_output[:1500]}\n```"
+        )
+
+    gpt_source = await _run_command_async(["git", "show", f"{remote_ref}:chat/gpt.py"], 30)
+    model = _desired_ollama_model(gpt_source.stdout if gpt_source.returncode == 0 else "")
+    ollama_ok, ollama_note = await _ensure_ollama_model(model, set_status)
+    if not ollama_ok:
+        return False, False, (
+            f"Ollama model sync failed; code was not changed "
+            f"(bot was not restarted):\n{ollama_note}"
+        )
+
+    await set_status(
+        f"Updating from GitHub…\n"
+        f"- Dependencies installed\n"
         f"- Resetting working tree (was `{before_hash}`)"
     )
 
@@ -196,32 +234,6 @@ async def _apply_repo_update(set_status: StatusCallback) -> tuple[bool, bool, st
     if clean_result.returncode != 0:
         error_output = (clean_result.stderr or clean_result.stdout or "Unknown error").strip()
         return False, False, f"Update failed during clean:\n```\n{error_output[:1500]}\n```"
-
-    await set_status(
-        f"Updating from GitHub…\n"
-        f"- Code synced to `origin/{GIT_BRANCH}`\n"
-        f"- Installing dependencies"
-    )
-
-    pip_result = await _run_command_async(
-        ["pip3", "install", "-r", "requirements.txt"],
-        timeout=300,
-    )
-    if pip_result.returncode != 0:
-        error_output = (pip_result.stderr or pip_result.stdout or "Unknown error").strip()
-        return False, False, (
-            "Code synced, but dependency install failed "
-            "(bot was not restarted):\n"
-            f"```\n{error_output[:1500]}\n```"
-        )
-
-    model = _desired_ollama_model()
-    ollama_ok, ollama_note = await _ensure_ollama_model(model, set_status)
-    if not ollama_ok:
-        return False, False, (
-            f"Code and deps updated, but Ollama model sync failed "
-            f"(bot was not restarted):\n{ollama_note}"
-        )
 
     after_hash = await _git_short("HEAD")
     reset_line = (reset_result.stdout or "").strip()

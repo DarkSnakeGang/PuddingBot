@@ -73,6 +73,7 @@ TRACKED_REPOS: Tuple[TrackedRepo, ...] = (
 async def _git_ls_remote(repo: TrackedRepo) -> Optional[str]:
     """Return the current tip SHA for repo.branch via git ls-remote."""
     ref = f"refs/heads/{repo.branch}"
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             "git",
@@ -81,10 +82,15 @@ async def _git_ls_remote(repo: TrackedRepo) -> Optional[str]:
             ref,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # A renamed/private repo must fail fast, not wait on a credential prompt
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=45)
     except asyncio.TimeoutError:
         print(f"[repo-watch] Timed out probing {repo.full_name}")
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            await proc.wait()
         return None
     except FileNotFoundError:
         print("[repo-watch] git not found on PATH")
@@ -125,10 +131,12 @@ def _save_state(shas: Dict[str, str]) -> None:
         "lastChecked": datetime.now(timezone.utc).isoformat(),
         "shas": shas,
     }
+    tmp_path = f"{STATE_PATH}.tmp"
     try:
-        with open(STATE_PATH, "w", encoding="utf-8") as handle:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True)
             handle.write("\n")
+        os.replace(tmp_path, STATE_PATH)
     except Exception as error:
         print(f"[repo-watch] Could not write state file: {error}")
 
@@ -171,17 +179,17 @@ class RepoWatcher(commands.Cog):
             )
             return None
 
-    async def _announce(self, names: List[str]) -> None:
-        """Post one digest listing which mods were updated (no links)."""
+    async def _announce(self, names: List[str]) -> bool:
+        """Post one digest listing which mods were updated (no links). True if sent."""
         if not names:
-            return
+            return True
         channel = await self._get_announce_channel()
         if channel is None:
             print(
                 f"[repo-watch] Skipping announce for {', '.join(names)} — "
                 f"channel {REPO_WATCH_CHANNEL_ID} unavailable"
             )
-            return
+            return False
         if len(names) == 1:
             message = f"{names[0]} was updated!"
         elif len(names) == 2:
@@ -191,14 +199,17 @@ class RepoWatcher(commands.Cog):
         try:
             await channel.send(message)
             print(f"[repo-watch] Announced updates: {', '.join(names)}")
+            return True
         except Exception as error:
             print(f"[repo-watch] Failed to announce updates: {error}")
+            return False
 
     async def probe_once(self, announce: bool = True) -> List[str]:
         """Probe all repos. Returns display names that changed."""
         changed: List[str] = []
         async with self._probe_lock:
             updated_state = dict(self._known_shas)
+            previous_state = dict(self._known_shas)
             for repo in TRACKED_REPOS:
                 sha = await _git_ls_remote(repo)
                 if not sha:
@@ -222,10 +233,13 @@ class RepoWatcher(commands.Cog):
                     f"{previous[:7]} → {sha[:7]}"
                 )
 
+            if announce and changed and not await self._announce(changed):
+                # Keep the old SHAs so the next digest retries the announcement
+                for repo in TRACKED_REPOS:
+                    if repo.name in changed:
+                        updated_state[repo.full_name] = previous_state[repo.full_name]
             self._known_shas = updated_state
             _save_state(updated_state)
-            if announce and changed:
-                await self._announce(changed)
         return changed
 
     @tasks.loop(minutes=REPO_WATCH_MINUTES)
