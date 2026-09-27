@@ -4,7 +4,8 @@ from . import gpt
 import wall
 import os
 import re
-import asyncio
+import threading
+from collections import OrderedDict
 from typing import Optional
 
 POI_EMOJI_ID = os.getenv("POI_EMOJI_ID", "1362102081502318742")
@@ -22,16 +23,13 @@ def wants_fastsnakestats_link(text: str) -> bool:
     if not lowered.strip():
         return False
 
-    asks_for_site = any(
+    asks_for_site = bool(re.search(r"\b(?:website|web site|url)\b", lowered)) or any(
         phrase in lowered
         for phrase in (
-            "website",
-            "web site",
             "site again",
             "the site",
             "the link",
             "link again",
-            "url",
             "where can i see",
             "where do i see",
             "where to see",
@@ -84,7 +82,7 @@ def wants_fastsnakestats_link(text: str) -> bool:
             name in lowered
             for name in ("fastsnake", "snake stats", "snakestats", "fast snake stats")
         )
-        and any(word in lowered for word in ("link", "website", "site", "url", "where", "what"))
+        and bool(re.search(r"\b(?:link|website|site|url|where|what)\b", lowered))
     )
     return asks_for_fss_by_name or (asks_for_site and mentions_records)
 
@@ -98,8 +96,8 @@ _HOW_MANY_RECORDS_RE = re.compile(
     r"|"
     r"(?:what(?:'s|s| is)|whats)\s+(.+?)(?:'s|s)?\s+(?:world\s+)?(?:record|wr)\s+count\b"
     r"|"
-    # Short form: "how many wrs X" / "how many records X"
-    r"how\s+many\s+(?:world\s+)?(?:records?|wrs?)\s+(.+)"
+    # Short form: "how many wrs X" / "how many records X" (single-token names only)
+    r"how\s+many\s+(?:world\s+)?(?:records?|wrs?)\s+(\S+)"
     r")"
     r"[\s?!.]*$"
 )
@@ -108,8 +106,9 @@ _NAME_TRAILING_JUNK_RE = re.compile(
     r"(?i)\s+(?:have|got|hold|holding|does|has|is|are|again)\s*$"
 )
 _REJECT_NAMES = frozenset({
-    "you", "i", "we", "they", "someone", "anyone", "people",
-    "does", "has", "is", "are", "the", "a", "an",
+    "you", "i", "we", "they", "someone", "anyone", "people", "me", "he", "she",
+    "does", "has", "have", "is", "are", "do", "did", "the", "a", "an", "there",
+    "exist", "total", "left", "now", "today",
 })
 
 
@@ -119,7 +118,7 @@ def parse_how_many_records_player(text: str) -> Optional[str]:
     if not raw:
         return None
     # Strip bot mention so pings still work: <@id> how many...
-    cleaned = re.sub(r"<@!?\d+>", " ", raw)
+    cleaned = re.sub(r"<@[!&]?\d+>", " ", raw)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     match = _HOW_MANY_RECORDS_RE.match(cleaned)
     if not match:
@@ -133,7 +132,7 @@ def parse_how_many_records_player(text: str) -> Optional[str]:
     name = re.sub(r"(?i)^(the|a|an|does|has)\s+", "", name).strip()
     if not name or len(name) > 64:
         return None
-    if name.lower() in _REJECT_NAMES:
+    if name.lower() in _REJECT_NAMES or name.startswith("@"):
         return None
     return name
 
@@ -198,7 +197,7 @@ def get_random_funny_gif(api_key, emotion):
     }
 
     try:
-        response = rq.get(url, params=params)
+        response = rq.get(url, params=params, timeout=10)
         response.raise_for_status()
         payload = response.json()
 
@@ -211,10 +210,9 @@ def get_random_funny_gif(api_key, emotion):
         gif_url = _extract_klipy_gif_url(choice(gifs))
         return gif_url if gif_url else "No suitable GIF found."
 
-    except rq.exceptions.RequestException as e:
-        return f"Request error: {e}"
-    except ValueError as e:
-        return f"JSON decoding error: {e}"
+    except (rq.exceptions.RequestException, ValueError) as e:
+        print(f"Klipy GIF lookup failed: {type(e).__name__}")
+        return "GIF lookup failed, try again later."
 
 src_url = 'https://www.speedrun.com/api/v1/games/'
 snake_game = "o1y9pyk6"
@@ -323,13 +321,40 @@ def clear_context():
     }]
 
 context = clear_context()
-conversation_history = {}  # Store conversation history per user
+MAX_HISTORY_USERS = 500
+conversation_history: "OrderedDict[str, list]" = OrderedDict()
+_history_locks: dict = {}
+_history_guard = threading.Lock()
+_MENTION_RE = re.compile(r"<@!?1210325027023753307>", re.IGNORECASE)
+_GIF_PREFIX_RE = re.compile(r"^gif(?:\s+(.*))?$", re.IGNORECASE | re.DOTALL)
+_TRIGGER_RES = {
+    "how": re.compile(r"\bhow\b"),
+    "timer": re.compile(r"\btimers?\b"),
+    "tas": re.compile(r"\b(?:tas|autoplay)\b"),
+    "mods": re.compile(r"\bmods?\b"),
+    "pause": re.compile(r"\bpause\b"),
+}
+
+
+def _user_lock(user: str) -> threading.Lock:
+    with _history_guard:
+        return _history_locks.setdefault(user, threading.Lock())
+
+
+def _user_history(user: str) -> list:
+    with _history_guard:
+        history = conversation_history.pop(user, [])
+        conversation_history[user] = history
+        while len(conversation_history) > MAX_HISTORY_USERS:
+            old_user, _ = conversation_history.popitem(last=False)
+            _history_locks.pop(old_user, None)
+        return history
 
 def get_response(user_input: str, user="Nobody", status_notify=None) -> str:
-    blocked_users = ["1118731833262231714"]
+    blocked_users = {"1118731833262231714"}
     global context
+    user = str(user)
     lowered = user_input.lower()
-    PuddingBot = '<@1210325027023753307>'
 
     cringe_list = ['https://media.tenor.com/v8zqaakaqlaaaaac/sensational-poster-cinema-in-2014-aamirkhan.gif',
                    'https://tenor.com/view/pingas-butt-lame-fat-sitdown-gif-4771119']
@@ -343,8 +368,9 @@ def get_response(user_input: str, user="Nobody", status_notify=None) -> str:
     if mentions_poi_emoji(user_input):
         return POI_EMOJI
 
-    if 'gif' == lowered[:3]:
-        return get_random_funny_gif(os.getenv('KLIPY_KEY'), lowered[3:].strip())
+    gif_match = _GIF_PREFIX_RE.match(lowered.strip())
+    if gif_match:
+        return get_random_funny_gif(os.getenv('KLIPY_KEY'), (gif_match.group(1) or "").strip())
     
     if 'i completely agree' == lowered[:len('I completely agree')]:
         return 'https://klipy.com/gifs/i-completely-agree-i-agree'
@@ -358,51 +384,42 @@ def get_response(user_input: str, user="Nobody", status_notify=None) -> str:
     if wants_fastsnakestats_link(user_input):
         return FASTSNAKESTATS_URL
 
-    if "how" in lowered:
-        if "timer" in lowered:
+    if _TRIGGER_RES["how"].search(lowered):
+        if _TRIGGER_RES["timer"].search(lowered):
             return "<#968893937630736504>"
-        if "tas" in lowered or "autoplay" in lowered:
+        if _TRIGGER_RES["tas"].search(lowered):
             return "Read rule 10, <#995955083395215412>"
         if "many" in lowered and "patterns" in lowered and "wall" in lowered and "small" in lowered:
             return "So far we know of exactly 235,355,155 wall patterns in small board."
-        if "mods" in lowered:
+        if _TRIGGER_RES["mods"].search(lowered):
             return "https://googlesnakemods.com"
-        if "pause" in lowered:
+        if _TRIGGER_RES["pause"].search(lowered):
             return "Press Q in Remix or Remix Ultra"
 
-    if PuddingBot in lowered:
+    if _MENTION_RE.search(user_input):
         print(f"[BOT PINGED] User {user} sent: {user_input}")
         
         if user in blocked_users: # Blocked him from using the bot
             return "You are blocked from using PuddingBot GPT function"
-        if lowered.replace(PuddingBot, "") == " clear context":
+        prompt = _MENTION_RE.sub("", user_input).strip()
+        if prompt.lower() == "clear context":
             context = clear_context()
-            if user in conversation_history:
-                conversation_history[user] = []
+            with _user_lock(user):
+                _user_history(user).clear()
             return "Context cleared, I will no longer remember what we just discussed"
-        
-        # Get or initialize conversation history for this user
-        if user not in conversation_history:
-            conversation_history[user] = []
-        
-        # Prepare user message
-        user_message = lowered.replace(PuddingBot, "") + ", give a short answer but never mention that I asked for a short answer"
-        
-        # Add user message to conversation history BEFORE calling GPT
-        conversation_history[user].append({"role": "user", "content": user_message})
-        
-        # Create messages array with system context and full conversation history
-        messages = context + conversation_history[user]
-        
-        gpt_res = gpt.chat_with_gpt(messages, status_notify=status_notify)
-        print(f"[AI RESPONSE] Generated: {gpt_res}")
-        
-        # Add assistant response to conversation history
-        conversation_history[user].append({"role": "assistant", "content": gpt_res})
-        
-        # Limit conversation history to last 10 messages to prevent context overflow
-        if len(conversation_history[user]) > 10:
-            conversation_history[user] = conversation_history[user][-10:]
+
+        user_message = prompt + ", give a short answer but never mention that I asked for a short answer"
+
+        with _user_lock(user):
+            history = _user_history(user)
+            history.append({"role": "user", "content": user_message})
+            messages = context + history
+
+            gpt_res = gpt.chat_with_gpt(messages, status_notify=status_notify)
+            print(f"[AI RESPONSE] Generated: {gpt_res}")
+
+            history.append({"role": "assistant", "content": gpt_res})
+            del history[:-10]
         
         if len(gpt_res) > 2000:
             return "The answer I have is too long\nYou'll have to wait until Yarmiplay implements the option for me to split my answer into multiple messages for long answers like this"

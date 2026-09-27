@@ -1,6 +1,7 @@
 from typing import Final, Optional, List
 import io
 import os
+import traceback
 import random
 import re
 from datetime import datetime, timezone, timedelta
@@ -81,7 +82,12 @@ if not TOKEN:
 intents: Intents = Intents.default()
 intents.message_content = True
 intents.messages = True  # Enable message intents
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(
+    command_prefix='!',
+    intents=intents,
+    allowed_mentions=discord.AllowedMentions.none(),
+)
+_commands_synced = False
 
 _poi_purge_lock: Optional[asyncio.Lock] = None
 
@@ -94,8 +100,8 @@ def _get_poi_purge_lock() -> asyncio.Lock:
 def is_poi_channel(channel) -> bool:
     if channel is None:
         return False
-    if POI_CHANNEL_ID and str(getattr(channel, 'id', '')) == str(POI_CHANNEL_ID):
-        return True
+    if POI_CHANNEL_ID:
+        return str(getattr(channel, 'id', '')) == str(POI_CHANNEL_ID)
     return str(channel) == POI_CHANNEL_NAME
 
 # Message stuff
@@ -105,7 +111,9 @@ async def send_message(message: Message, user_message: str, user="Nobody") -> No
         return
 
     if is_private := user_message[0] == '?':
-        user_message = user_message[1]
+        user_message = user_message[1:].strip()
+        if not user_message:
+            return
 
     try:
         loop = asyncio.get_running_loop()
@@ -160,8 +168,8 @@ async def send_message(message: Message, user_message: str, user="Nobody") -> No
         elif response:
             print("[PuddingBot]: " + response)
             await target.send(response)
-    except Exception as e:
-        print(e)
+    except Exception:
+        traceback.print_exc()
 
 
 async def _send_player_records_lookup(message: Message, target, queried_player: str) -> None:
@@ -209,7 +217,12 @@ async def _send_player_records_lookup(message: Message, target, queried_player: 
 # Startup for the bot
 @bot.event
 async def on_ready() -> None:
+    global _commands_synced
     print(f'{bot.user} is now running')
+    # on_ready fires again after reconnects; syncing every time hits rate limits
+    if _commands_synced:
+        return
+    _commands_synced = True
 
     # Sync slash/context commands.
     # Global sync publishes the public Commands list (like esmBot's profile).
@@ -240,9 +253,14 @@ async def on_ready() -> None:
     except Exception as e:
         print(f"Error syncing commands: {e}")
 
+    if POI_CHANNEL_ID:
+        poi_channel = bot.get_channel(int(POI_CHANNEL_ID))
+        if poi_channel is not None:
+            asyncio.create_task(purge_non_poi_messages(poi_channel))
+
 @bot.event
 async def on_message(message: Message) -> None:
-    if message.author == bot.user:
+    if message.author == bot.user or message.author.bot:
         return
 
     username: str = str(message.author)
@@ -251,13 +269,9 @@ async def on_message(message: Message) -> None:
     in_poi = is_poi_channel(message.channel)
 
     print(f'[{channel}] {username}: "{user_message}"')
-    if in_poi:
-        # Reply first, purge in background so old-message cleanup doesn't block poi replies
-        lock = _get_poi_purge_lock()
-        if not lock.locked():
-            asyncio.create_task(purge_non_poi_messages(message.channel))
-    elif channel == "Direct Message with Unknown User":
-        return
+    if in_poi and not (is_allowed_poi_message(user_message) and not message.attachments):
+        # Full-history sweep runs once at startup; live messages are checked one by one
+        asyncio.create_task(_delete_one_quietly(message))
 
     # 1/67 easter egg when a message contains "67"
     if "67" in user_message and random.randint(1, 67) == 1 and os.path.isfile(SIXTY_SEVEN_ASSET):
@@ -435,6 +449,13 @@ async def _delete_one(msg: Message) -> bool:
     except HTTPException as e:
         print(f"Could not delete message {msg.id}: {e}")
         return False
+
+async def _delete_one_quietly(msg: Message) -> None:
+    try:
+        await _delete_one(msg)
+    except Forbidden:
+        print(f"Missing Manage Messages permission in #{msg.channel}")
+
 
 async def purge_non_poi_messages(channel) -> None:
     """

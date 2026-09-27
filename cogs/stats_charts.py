@@ -69,16 +69,12 @@ def progression_chart_png(
             dt = datetime.fromisoformat(date_str[:10])
         except ValueError:
             continue
-        raw = flip.get("t")
+        y = _parse_iso_seconds(str(flip.get("t") or ""))
+        if y is None:
+            continue
         if high_score:
-            try:
-                y = float(raw)
-            except (TypeError, ValueError):
-                y = _parse_iso_seconds(str(raw or "")) or 0.0
-        else:
-            y = _parse_iso_seconds(str(raw or ""))
-            if y is None:
-                continue
+            # High Score runs store score/1000 as the time
+            y = round(y * 1000)
         points.append((dt, float(y)))
 
     if len(points) < 2:
@@ -131,11 +127,9 @@ def progression_chart_png(
 
     # Y labels
     for frac in (0.0, 0.5, 1.0):
-        val = y0 + (y1 - y0) * (1 - frac) if not high_score else y0 + (y1 - y0) * frac
-        # Use actual axis mapping: top = y1 for times (lower is better visually still top=max)
         axis_val = y1 - (y1 - y0) * frac
         _, py = to_xy(x0, axis_val)
-        label = f"{axis_val:.2f}" if axis_val < 100 else f"{axis_val:.0f}"
+        label = f"{axis_val:.0f}" if high_score or axis_val >= 100 else f"{axis_val:.2f}"
         draw.text((8, py - 6), label, fill=(160, 168, 180), font=font_sm)
 
     # X labels (first / mid / last)
@@ -182,12 +176,13 @@ def activity_heatmap_png(
     cell = 14
     gap = 2
     label_w = 28
-    month_h = 18
+    month_label_y = 28
+    grid_top = 44
     rows = 7  # Sun..Sat
     # Weeks in year ~53
     cols = 53
     width = label_w + cols * (cell + gap) + 24
-    height = month_h + rows * (cell + gap) + 60
+    height = grid_top + rows * (cell + gap) + 44
     img = Image.new("RGB", (width, height), (24, 28, 36))
     draw = ImageDraw.Draw(img)
     font = _font(12)
@@ -221,7 +216,7 @@ def activity_heatmap_png(
     for i, lab in enumerate(day_labels):
         if i % 2 == 1:
             continue
-        y = month_h + i * (cell + gap)
+        y = grid_top + i * (cell + gap)
         draw.text((6, y), lab, fill=(120, 128, 140), font=font_sm)
 
     month_drawn = set()
@@ -231,20 +226,20 @@ def activity_heatmap_png(
         wd = (d.weekday() + 1) % 7
         week = (start_wd + day_of_year) // 7
         x = label_w + week * (cell + gap)
-        y = month_h + wd * (cell + gap)
+        y = grid_top + wd * (cell + gap)
         v = by_date.get(date_str, 0)
         draw.rectangle([x, y, x + cell - 1, y + cell - 1], fill=color_for(v))
         if d.day == 1 and d.month not in month_drawn:
             month_drawn.add(d.month)
             draw.text(
-                (x, 22),
+                (x, month_label_y),
                 calendar.month_abbr[d.month],
                 fill=(160, 168, 180),
                 font=font_sm,
             )
 
     # Legend
-    legend_y = month_h + rows * (cell + gap) + 12
+    legend_y = grid_top + rows * (cell + gap) + 12
     draw.text((label_w, legend_y), "Less", fill=(140, 148, 160), font=font_sm)
     lx = label_w + 36
     for i, frac in enumerate((0, 0.25, 0.5, 0.75, 1.0)):

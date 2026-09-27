@@ -1,3 +1,11 @@
+# Secrets and runtime state (never bake into image layers)
+.env
+.env.*
+api_key
+emoji_map.json
+*_state.json
+*_state.json.*
+
 # Git
 .git
 .gitignore

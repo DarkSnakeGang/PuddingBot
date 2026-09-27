@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 STATE_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "wr_watch_state.json")
 MAX_WATCHES_PER_USER = 15
@@ -36,7 +37,13 @@ def load_state() -> Dict:
         if isinstance(data, dict) and isinstance(data.get("watches"), list):
             return data
     except Exception as error:
-        print(f"[wr-watch] Could not read state: {error}")
+        # Keep the unreadable file so the next save doesn't silently wipe every watch
+        backup = f"{STATE_PATH}.corrupt"
+        print(f"[wr-watch] Could not read state ({error}); saved a copy to {backup}")
+        try:
+            shutil.copyfile(STATE_PATH, backup)
+        except OSError:
+            pass
     return _empty_state()
 
 
@@ -45,10 +52,12 @@ def save_state(state: Dict) -> None:
         "lastChecked": datetime.now(timezone.utc).isoformat(),
         "watches": state.get("watches") or [],
     }
+    tmp_path = f"{STATE_PATH}.tmp"
     try:
-        with open(STATE_PATH, "w", encoding="utf-8") as handle:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
             handle.write("\n")
+        os.replace(tmp_path, STATE_PATH)
     except Exception as error:
         print(f"[wr-watch] Could not write state: {error}")
 
@@ -135,3 +144,15 @@ def update_watch_snapshot(watch_id: str, fingerprint: str, player: str, time_str
             break
     if changed:
         save_state(state)
+
+
+def remove_channel_watches(channel_ids: Iterable[int]) -> int:
+    dead = {int(c) for c in channel_ids}
+    state = load_state()
+    before = state.get("watches") or []
+    after = [w for w in before if int(w.get("channel_id") or 0) not in dead]
+    removed = len(before) - len(after)
+    if removed:
+        state["watches"] = after
+        save_state(state)
+    return removed

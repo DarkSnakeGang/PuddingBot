@@ -5,12 +5,14 @@ from typing import Optional, Dict, List, Tuple
 import asyncio
 import os
 import random
+import re
 from calendar import monthrange, month_name
 from datetime import datetime, date, time, timedelta, timezone
 
 from github_cache_fetcher import github_cache_fetcher
 import ce_aggregates
 import data_management as dm
+from . import embed_limits
 from . import wr_watch
 from . import stats_charts
 
@@ -377,10 +379,11 @@ class FastSnakeStats(commands.Cog):
             if not available_dates or len(available_dates) < 2:
                 return None
             
-            # Get the most recent 7 days from available dates
-            recent_dates = available_dates[-7:] if len(available_dates) >= 7 else available_dates
-            current_date = recent_dates[-1]  # Most recent date
-            week_ago_date = recent_dates[0]  # 7 days ago (or earliest available)
+            current_date = available_dates[-1]
+            target = (date.fromisoformat(current_date) - timedelta(days=7)).isoformat()
+            # Latest snapshot on/before 7 calendar days ago (dates can have gaps)
+            earlier = [d for d in available_dates if d <= target]
+            week_ago_date = earlier[-1] if earlier else available_dates[0]
             
             # Fetch current and week-ago data
             current_records = await github_cache_fetcher.fetch_world_records_for_date(current_date)
@@ -434,12 +437,12 @@ class FastSnakeStats(commands.Cog):
                             'new_time': dm.get_run_time(current_best),
                             'old_date': dm.get_run_date(week_ago_best),
                             'new_date': dm.get_run_date(current_best),
-                            'improvement': self._calculate_improvement(week_ago_best, current_best)
+                            'improvement': self._calculate_improvement(week_ago_best, current_best, settings_key)
                         })
                     
                     # Same player improved their own record
                     elif current_player == week_ago_player:
-                        improvement = self._calculate_improvement(week_ago_best, current_best)
+                        improvement = self._calculate_improvement(week_ago_best, current_best, settings_key)
                         if improvement and improvement > 0:
                             improved_records.append({
                                 'settings': settings_key,
@@ -565,7 +568,7 @@ class FastSnakeStats(commands.Cog):
         holds.sort(key=lambda item: (-item["days"], item["start"]))
         standing = [item for item in holds if item["stillStanding"]]
         remaining_old = sum(
-            1 for item in standing[:50] if item["days"] >= MIN_OLDEST_HOLD_DAYS
+            1 for item in standing if item["days"] >= MIN_OLDEST_HOLD_DAYS
         )
         ranked = standing if standing_only else holds
         return ranked[:limit], remaining_old
@@ -659,7 +662,7 @@ class FastSnakeStats(commands.Cog):
                 return None
             period_start, period_end, period_label = bounds
 
-            explorer = await github_cache_fetcher.fetch_statistics_explorer(force_refresh=True)
+            explorer = await github_cache_fetcher.fetch_statistics_explorer()
             if not explorer:
                 return None
 
@@ -849,7 +852,8 @@ class FastSnakeStats(commands.Cog):
             await channel.send("❌ Unable to build the monthly oldest-records report.")
             return False
 
-        await channel.send(embeds=self.build_monthly_report_embeds(report_data))
+        for group in embed_limits.group_embeds(self.build_monthly_report_embeds(report_data)):
+            await channel.send(embeds=group)
         return True
 
     @tasks.loop(time=time(hour=12, minute=0, tzinfo=MONTHLY_REPORT_TZ))
@@ -901,63 +905,64 @@ class FastSnakeStats(commands.Cog):
         watches = state.get("watches") or []
         if not watches:
             return
+        await github_cache_fetcher.refresh_world_records()
         records = await github_cache_fetcher.fetch_current_world_records()
         if not records:
             print("[wr-watch] No records available; skipping probe")
             return
 
-        flips: Dict[str, Dict] = {}
+        # (category, channel_id) -> watches that flipped
+        groups: Dict[Tuple[str, int], List[Dict]] = {}
         for watch in watches:
             category = watch.get("category") or ""
             runs = records.get(category) or []
-            fingerprint = wr_watch.fingerprint_runs(runs)
-            previous = watch.get("fingerprint") or ""
-            if previous == fingerprint:
+            if (watch.get("fingerprint") or "") == wr_watch.fingerprint_runs(runs):
                 continue
-            old_player = watch.get("player") or "unheld"
-            old_time = watch.get("time") or "—"
-            new_line = self._watch_holder_line(runs)
-            wr_watch.update_watch_snapshot(
-                watch.get("id") or "",
-                fingerprint,
-                dm.get_player_name(runs[0]) if runs else "unheld",
-                dm.get_run_time(runs[0]) if runs else "—",
-            )
-            flips.setdefault(
-                category,
-                {
-                    "old": f"{old_player} · {old_time}",
-                    "new": new_line,
-                    "run_links": self._watch_run_links(runs),
-                    "pings": {},
-                },
-            )
-            channel_id = int(watch.get("channel_id") or 0)
-            user_id = int(watch.get("user_id") or 0)
-            flips[category]["pings"].setdefault(channel_id, set()).add(user_id)
+            key = (category, int(watch.get("channel_id") or 0))
+            groups.setdefault(key, []).append(watch)
 
-        for category, payload in flips.items():
+        dead_channels = set()
+        for (category, channel_id), group in groups.items():
+            runs = records.get(category) or []
+            first = group[0]
             line = (
                 f"{self._format_category_line(category)} was updated!\n"
-                f"was: {payload['old']}\n"
-                f"now: {payload['new']}"
+                f"was: {first.get('player') or 'unheld'} · {first.get('time') or '—'}\n"
+                f"now: {self._watch_holder_line(runs)}"
             )
-            if payload.get("run_links"):
-                line += f"\n{payload['run_links']}"
-            for channel_id, user_ids in payload["pings"].items():
-                mentions = " ".join(f"<@{uid}>" for uid in sorted(user_ids))
-                message = f"{mentions}\n{line}" if mentions else line
-                channel = self.bot.get_channel(channel_id)
+            run_links = self._watch_run_links(runs)
+            if run_links:
+                line += f"\n{run_links}"
+            user_ids = sorted({int(w.get("user_id") or 0) for w in group})
+            mentions = " ".join(f"<@{uid}>" for uid in user_ids)
+            message = f"{mentions}\n{line}" if mentions else line
+
+            channel = self.bot.get_channel(channel_id)
+            try:
                 if channel is None:
-                    try:
-                        channel = await self.bot.fetch_channel(channel_id)
-                    except Exception as error:
-                        print(f"[wr-watch] Could not fetch channel {channel_id}: {error}")
-                        continue
-                try:
-                    await channel.send(message)
-                except Exception as error:
-                    print(f"[wr-watch] Failed to announce {category}: {error}")
+                    channel = await self.bot.fetch_channel(channel_id)
+                await channel.send(
+                    message, allowed_mentions=discord.AllowedMentions(users=True)
+                )
+            except (discord.NotFound, discord.Forbidden) as error:
+                print(f"[wr-watch] Channel {channel_id} unusable, dropping its watches: {error}")
+                dead_channels.add(channel_id)
+                continue
+            except Exception as error:
+                # Keep the old snapshot so the change is announced on the next probe
+                print(f"[wr-watch] Failed to announce {category}: {error}")
+                continue
+
+            for watch in group:
+                wr_watch.update_watch_snapshot(
+                    watch.get("id") or "",
+                    wr_watch.fingerprint_runs(runs),
+                    dm.get_player_name(runs[0]) if runs else "unheld",
+                    dm.get_run_time(runs[0]) if runs else "—",
+                )
+
+        if dead_channels:
+            wr_watch.remove_channel_watches(dead_channels)
 
     @tasks.loop(hours=24)
     async def wr_watch_task(self) -> None:
@@ -972,75 +977,45 @@ class FastSnakeStats(commands.Cog):
         await self.bot.wait_until_ready()
         await asyncio.sleep(120)
     
-    def _calculate_improvement(self, old_run: dict, new_run: dict) -> Optional[float]:
-        """Calculate time improvement in milliseconds"""
-        try:
-            old_time_str = dm.get_run_time(old_run)
-            new_time_str = dm.get_run_time(new_run)
-            
-            # Convert time strings to milliseconds for comparison
-            old_ms = self._time_to_milliseconds(old_time_str)
-            new_ms = self._time_to_milliseconds(new_time_str)
-            
-            if old_ms and new_ms:
-                return old_ms - new_ms  # Positive means improvement
+    @staticmethod
+    def _run_seconds(run: dict) -> Optional[float]:
+        times = (run or {}).get("times") or {}
+        value = times.get("primary_t")
+        if isinstance(value, (int, float)):
+            return float(value)
+        match = re.fullmatch(
+            r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?", str(times.get("primary") or "")
+        )
+        if not match or not any(match.groups()):
             return None
-        except Exception as e:
-            print(f"Error calculating improvement: {e}")
+        hours, minutes, seconds = match.groups()
+        return int(hours or 0) * 3600 + int(minutes or 0) * 60 + float(seconds or 0)
+
+    def _calculate_improvement(
+        self, old_run: dict, new_run: dict, settings_key: str = ""
+    ) -> Optional[float]:
+        """Improvement in ms (timed) or apples (High Score); positive = better."""
+        old_s = self._run_seconds(old_run)
+        new_s = self._run_seconds(new_run)
+        if old_s is None or new_s is None:
             return None
-    
-    def _time_to_milliseconds(self, time_str: str) -> Optional[float]:
-        """Convert time string to milliseconds"""
-        try:
-            if not time_str or time_str == "N/A":
-                return None
-            
-            # Handle format like "1h 2m 3s 456ms"
-            total_ms = 0
-            
-            # Extract hours
-            if 'h' in time_str:
-                parts = time_str.split('h')
-                hours = int(parts[0])
-                total_ms += hours * 3600 * 1000
-                time_str = parts[1]
-            
-            # Extract minutes
-            if 'm' in time_str:
-                parts = time_str.split('m')
-                minutes = int(parts[0])
-                total_ms += minutes * 60 * 1000
-                time_str = parts[1]
-            
-            # Extract seconds
-            if 's' in time_str:
-                parts = time_str.split('s')
-                seconds = float(parts[0])
-                total_ms += seconds * 1000
-                time_str = parts[1]
-            
-            # Extract milliseconds
-            if 'ms' in time_str:
-                ms = int(time_str.replace('ms', '').strip())
-                total_ms += ms
-            
-            return total_ms
-        except Exception as e:
-            print(f"Error converting time to milliseconds: {e}")
-            return None
-    
-    async def get_date_choices(self) -> List[app_commands.Choice[str]]:
-        """Get available dates as choices for command parameters"""
+        # High Score runs store score/1000 as the "time"
+        if settings_key.split("|")[-1] == "High Score":
+            return round((new_s - old_s) * 1000)
+        return round((old_s - new_s) * 1000, 3)
+
+    async def get_date_choices(self, current: str = "") -> List[app_commands.Choice[str]]:
+        """Up to 25 available dates matching `current`, newest first"""
         try:
             dates = await github_cache_fetcher.get_available_dates()
-            if not dates:
-                return []
-            
-            # Create choices from available dates (most recent first)
+            needle = (current or "").strip()
             choices = []
-            for date in reversed(dates):  # Most recent first
-                choices.append(app_commands.Choice(name=date, value=date))
-            
+            for day in reversed(dates or []):
+                if needle and needle not in day:
+                    continue
+                choices.append(app_commands.Choice(name=day, value=day))
+                if len(choices) >= 25:
+                    break
             return choices
         except Exception as e:
             print(f"Error getting date choices: {e}")
@@ -1048,15 +1023,15 @@ class FastSnakeStats(commands.Cog):
     
     async def record_date_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
         """Autocomplete for date parameter in record command"""
-        return await self.get_date_choices()
+        return await self.get_date_choices(current)
     
     async def player_date_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
         """Autocomplete for date parameter in player command"""
-        return await self.get_date_choices()
+        return await self.get_date_choices(current)
     
     async def stats_date_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
         """Autocomplete for date parameter in stats command"""
-        return await self.get_date_choices()
+        return await self.get_date_choices(current)
 
     def _filter_setting_choices(self, options: List[str], current: str) -> List[app_commands.Choice[str]]:
         if current:
@@ -1701,8 +1676,8 @@ class FastSnakeStats(commands.Cog):
                     changes_text += f"{emoji} **RECORD CHANGE** - {category_info}\n"
                     changes_text += f"   🔄 **{item['old_player']}** → **{item['new_player']}**\n"
                     changes_text += f"   ⏱️ {old_display_time} → {new_display_time}\n"
-                    if item['improvement']:
-                        improvement_str = self._format_improvement(item['improvement'])
+                    if item['improvement'] and item['improvement'] > 0:
+                        improvement_str = self._format_improvement(item['improvement'], run_mode)
                         changes_text += f"   📈 Improvement: {improvement_str}\n"
                     changes_text += f"   📅 {item['new_date']}\n\n"
                 
@@ -1712,8 +1687,8 @@ class FastSnakeStats(commands.Cog):
                     changes_text += f"{emoji} **IMPROVED RECORD** - {category_info}\n"
                     changes_text += f"   👤 **{item['player']}**\n"
                     changes_text += f"   ⏱️ {old_display_time} → {new_display_time}\n"
-                    if item['improvement']:
-                        improvement_str = self._format_improvement(item['improvement'])
+                    if item['improvement'] and item['improvement'] > 0:
+                        improvement_str = self._format_improvement(item['improvement'], run_mode)
                         changes_text += f"   📈 Improvement: {improvement_str}\n"
                     changes_text += f"   📅 {item['new_date']}\n\n"
             
@@ -1727,13 +1702,16 @@ class FastSnakeStats(commands.Cog):
             )
         
         # Add footer with page info
-        total_pages = (len(all_items) + items_per_page - 1) // items_per_page
+        total_pages = max(1, (len(all_items) + items_per_page - 1) // items_per_page)
         embed.set_footer(text=f"Data from FastSnakeStats • Page {page + 1}/{total_pages}")
         
         return embed
     
-    def _format_improvement(self, improvement_ms: float) -> str:
-        """Format improvement time in a readable way"""
+    def _format_improvement(self, improvement_ms: float, run_mode: str = "") -> str:
+        """Format improvement (ms, or apples for High Score) in a readable way"""
+        if run_mode == "High Score":
+            apples = int(improvement_ms)
+            return f"+{apples} apple" + ("" if apples == 1 else "s")
         if improvement_ms < 1000:
             return f"{improvement_ms:.0f}ms"
         elif improvement_ms < 60000:
@@ -3448,7 +3426,7 @@ class FastSnakeStats(commands.Cog):
                         total_pages,
                         lambda page: self.create_player_mastery_embed(data, page),
                     )
-                    await interaction.followup.send(embed=embed, view=view)
+                    view.message = await interaction.followup.send(embed=embed, view=view)
                 else:
                     await interaction.followup.send(embed=embed)
                 return
@@ -3499,7 +3477,7 @@ class FastSnakeStats(commands.Cog):
                             display_name, items, hold_mode, page, filter_label
                         ),
                     )
-                    await interaction.followup.send(embed=embed, view=view)
+                    view.message = await interaction.followup.send(embed=embed, view=view)
                 else:
                     await interaction.followup.send(embed=embed)
                 return
@@ -3518,12 +3496,12 @@ class FastSnakeStats(commands.Cog):
             activity_len = len(player_data.get('recent_activity') or [])
             total_pages = max(1, (activity_len + 4) // 5)
             if total_pages > 1:
-                view = PlayerPaginationView(
-                    player_data,
+                view = ListPaginationView(
                     interaction.user.id,
-                    embed_factory=self.create_player_embed,
+                    total_pages,
+                    lambda page: self.create_player_embed(player_data, page),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
             
@@ -3588,8 +3566,12 @@ class FastSnakeStats(commands.Cog):
             
             total_pages = (len(stats_data.get('ranked') or []) + 9) // 10
             if total_pages > 1:
-                view = StatsPaginationView(stats_data, interaction.user.id)
-                await interaction.followup.send(embed=embed, view=view)
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_stats_embed(stats_data, page),
+                )
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
             
@@ -3769,10 +3751,12 @@ class FastSnakeStats(commands.Cog):
             total_pages = (all_items + items_per_page - 1) // items_per_page
             
             if total_pages > 1:
-                view = ReportPaginationView(
-                    report_data, interaction.user.id, self.create_weekly_report_embed
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_weekly_report_embed(report_data, page),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
             
@@ -3819,7 +3803,8 @@ class FastSnakeStats(commands.Cog):
                 return
 
             embeds = self.build_monthly_report_embeds(report_data)
-            await interaction.followup.send(embeds=embeds)
+            for group in embed_limits.group_embeds(embeds):
+                await interaction.followup.send(embeds=group)
         except Exception as e:
             print(f"Error in monthly command: {e}")
             await interaction.followup.send(
@@ -3878,12 +3863,14 @@ class FastSnakeStats(commands.Cog):
                 files.append(discord.File(fp=io.BytesIO(png), filename="progression.png"))
                 embed.set_image(url="attachment://progression.png")
             if total_pages > 1:
-                view = ListPaginationView(
-                    interaction.user.id,
-                    total_pages,
-                    lambda page: self.create_progression_embed(settings_key, flips, page),
-                )
-                await interaction.followup.send(embed=embed, view=view, files=files)
+                def progression_page(page: int) -> discord.Embed:
+                    page_embed = self.create_progression_embed(settings_key, flips, page)
+                    if png:
+                        page_embed.set_image(url="attachment://progression.png")
+                    return page_embed
+
+                view = ListPaginationView(interaction.user.id, total_pages, progression_page)
+                view.message = await interaction.followup.send(embed=embed, view=view, files=files)
             else:
                 await interaction.followup.send(embed=embed, files=files)
         except Exception as e:
@@ -3972,7 +3959,7 @@ class FastSnakeStats(commands.Cog):
                         items, filter_mode, page, filter_label
                     ),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
         except Exception as e:
@@ -4026,7 +4013,7 @@ class FastSnakeStats(commands.Cog):
                         items, window_key, page, filter_label
                     ),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
         except Exception as e:
@@ -4092,7 +4079,7 @@ class FastSnakeStats(commands.Cog):
                     total_pages,
                     lambda page: self.create_contested_embed(items, page, filter_label),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
         except Exception as e:
@@ -4168,7 +4155,7 @@ class FastSnakeStats(commands.Cog):
                     total_pages,
                     lambda page: self.create_popularity_embed(items, page, filter_label),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
         except Exception as e:
@@ -4237,7 +4224,7 @@ class FastSnakeStats(commands.Cog):
                     total_pages,
                     lambda page: self.create_stale_embed(items, page, filter_label),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
         except Exception as e:
@@ -4326,7 +4313,7 @@ class FastSnakeStats(commands.Cog):
                         items, tied_mode, page, filter_label
                     ),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
         except Exception as e:
@@ -4406,7 +4393,7 @@ class FastSnakeStats(commands.Cog):
                         total_pages,
                         lambda page: self.create_player_mastery_embed(data, page),
                     )
-                    await interaction.followup.send(embed=embed, view=view)
+                    view.message = await interaction.followup.send(embed=embed, view=view)
                 else:
                     await interaction.followup.send(embed=embed)
                 return
@@ -4430,7 +4417,7 @@ class FastSnakeStats(commands.Cog):
                     total_pages,
                     lambda page: self.create_mastery_leaderboard_embed(data, page),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
         except Exception as e:
@@ -4503,7 +4490,7 @@ class FastSnakeStats(commands.Cog):
                         items, page, "unicorns", filter_label
                     ),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
         except Exception as e:
@@ -4586,7 +4573,7 @@ class FastSnakeStats(commands.Cog):
                         items, page, show_mode, filter_label
                     ),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
         except Exception as e:
@@ -4689,7 +4676,7 @@ class FastSnakeStats(commands.Cog):
                     total_pages,
                     lambda page: self.create_unheld_embed(unheld_data, page),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
         except Exception as e:
@@ -4996,7 +4983,7 @@ class FastSnakeStats(commands.Cog):
                         total_pages,
                         lambda page: self.create_chronicle_debuts_embed(intros, page),
                     )
-                    await interaction.followup.send(embed=embed, view=view)
+                    view.message = await interaction.followup.send(embed=embed, view=view)
                 else:
                     await interaction.followup.send(embed=embed)
                 return
@@ -5030,7 +5017,7 @@ class FastSnakeStats(commands.Cog):
                         total_pages,
                         lambda page: self.create_chronicle_wars_list_embed(wars, page),
                     )
-                    await interaction.followup.send(embed=embed, view=view)
+                    view.message = await interaction.followup.send(embed=embed, view=view)
                 else:
                     await interaction.followup.send(embed=embed)
                 return
@@ -5053,7 +5040,7 @@ class FastSnakeStats(commands.Cog):
                     total_pages,
                     lambda page: self.create_chronicle_war_embed(war, page),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
         except Exception as e:
@@ -5215,7 +5202,7 @@ class FastSnakeStats(commands.Cog):
                     total_pages,
                     lambda page: self.create_compare_embed(data, page),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
         except Exception as e:
@@ -5300,7 +5287,7 @@ class FastSnakeStats(commands.Cog):
                     total_pages,
                     lambda page: self.create_country_embed(items, tied_mode, page, filter_label),
                 )
-                await interaction.followup.send(embed=embed, view=view)
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
         except Exception as e:
@@ -5368,6 +5355,7 @@ class FastSnakeStats(commands.Cog):
             self.create_help_embed,
         )
         await interaction.response.send_message(embed=embed, view=view)
+        view.message = await interaction.original_response()
 
     async def watch_remove_autocomplete(
         self, interaction: discord.Interaction, current: str
@@ -5629,8 +5617,12 @@ class FastSnakeStats(commands.Cog):
             embed = self.create_leaderboards_embed(board_data, page=0)
             total_pages = max(1, (len(board_data['rows']) + 7) // 8)
             if total_pages > 1:
-                view = LeaderboardsPaginationView(board_data, interaction.user.id)
-                await interaction.followup.send(embed=embed, view=view)
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_leaderboards_embed(board_data, page),
+                )
+                view.message = await interaction.followup.send(embed=embed, view=view)
             else:
                 await interaction.followup.send(embed=embed)
         except Exception as e:
@@ -5638,7 +5630,7 @@ class FastSnakeStats(commands.Cog):
             await interaction.followup.send("❌ An error occurred while fetching leaderboards.")
 
 class ListPaginationView(discord.ui.View):
-    """Generic Prev/Next pagination for explorer list embeds."""
+    """Prev/Next pagination; `embed_factory(page)` renders a page."""
 
     def __init__(self, user_id: int, total_pages: int, embed_factory):
         super().__init__(timeout=300)
@@ -5646,269 +5638,47 @@ class ListPaginationView(discord.ui.View):
         self.current_page = 0
         self.total_pages = max(1, total_pages)
         self.embed_factory = embed_factory
+        self.message: Optional[discord.Message] = None
+        self.next_button.disabled = self.total_pages <= 1
 
-    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
-    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
-            return
+            await interaction.response.send_message("âŒ This pagination is not for you!", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="â—€ï¸ Previous", style=discord.ButtonStyle.gray, disabled=True)
+    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.current_page = max(0, self.current_page - 1)
         await self.update_view(interaction)
 
-    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
+    @discord.ui.button(label="Next â–¶ï¸", style=discord.ButtonStyle.gray)
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
-            return
         self.current_page = min(self.total_pages - 1, self.current_page + 1)
         await self.update_view(interaction)
 
     async def update_view(self, interaction: discord.Interaction):
+        self.message = interaction.message or self.message
         self.previous_button.disabled = self.current_page == 0
         self.next_button.disabled = self.current_page >= self.total_pages - 1
         embed = self.embed_factory(self.current_page)
         await interaction.response.edit_message(embed=embed, view=self)
 
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
 
-class LeaderboardsPaginationView(discord.ui.View):
-    """Pagination for /leaderboards tables."""
 
-    def __init__(self, board_data: Dict, user_id: int):
-        super().__init__(timeout=300)
-        self.board_data = board_data
-        self.user_id = user_id
-        self.current_page = 0
-        self.items_per_page = 8
-        rows_len = len(board_data.get('rows') or [])
-        self.total_pages = max(1, (rows_len + self.items_per_page - 1) // self.items_per_page)
+for _name, _attr in list(vars(FastSnakeStats).items()):
+    if re.fullmatch(r"(create|build)_\w*embeds?", _name) and callable(_attr):
+        setattr(FastSnakeStats, _name, embed_limits.fit_embeds(_attr))
 
-    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
-    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
-            return
-        self.current_page = max(0, self.current_page - 1)
-        await self.update_view(interaction)
 
-    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
-            return
-        self.current_page = min(self.total_pages - 1, self.current_page + 1)
-        await self.update_view(interaction)
-
-    async def update_view(self, interaction: discord.Interaction):
-        self.previous_button.disabled = self.current_page == 0
-        self.next_button.disabled = self.current_page >= self.total_pages - 1
-        embed = self.create_leaderboards_embed(self.board_data, self.current_page)
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    def create_leaderboards_embed(self, board_data: Dict, page: int = 0) -> discord.Embed:
-        items_per_page = self.items_per_page
-        rows = board_data.get('rows') or []
-        total_pages = max(1, (len(rows) + items_per_page - 1) // items_per_page)
-        start = page * items_per_page
-        page_rows = rows[start:start + items_per_page]
-
-        embed = discord.Embed(
-            title=(
-                f"🏆 Leaderboards — {board_data['apple_amount']} • "
-                f"{board_data['speed']} • {board_data['size']}"
-            ),
-            color=0x00ff00,
-            timestamp=datetime.now()
-        )
-        lines = []
-        for row in page_rows:
-            line = f"**{row['gamemode']} • {row['run_mode']}** — {row['player']} — {row['time']}"
-            if row.get('link'):
-                line += f" • [View]({row['link']})"
-            lines.append(line)
-        embed.add_field(
-            name=f"World Records ({len(rows)} categories)",
-            value="\n".join(lines) if lines else "No records found for this combination.",
-            inline=False
-        )
-        embed.set_footer(
-            text=f"Data from FastSnakeStats • {board_data['date']} • Page {page + 1}/{total_pages}"
-        )
-        return embed
-
-class StatsPaginationView(discord.ui.View):
-    """View for paginating through stats results"""
-    
-    def __init__(self, stats_data: Dict, user_id: int):
-        super().__init__(timeout=300)  # 5 minute timeout
-        self.stats_data = stats_data
-        self.user_id = user_id
-        self.current_page = 0
-        self.players_per_page = 10
-        self.total_pages = max(
-            1,
-            (len(stats_data.get('ranked') or stats_data.get('top_by_percentage') or [])
-             + self.players_per_page - 1) // self.players_per_page
-        )
-    
-    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
-    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
-            return
-        
-        self.current_page = max(0, self.current_page - 1)
-        await self.update_view(interaction)
-    
-    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
-            return
-        
-        self.current_page = min(self.total_pages - 1, self.current_page + 1)
-        await self.update_view(interaction)
-    
-    async def update_view(self, interaction: discord.Interaction):
-        """Update the view with new page"""
-        # Update button states
-        self.previous_button.disabled = self.current_page == 0
-        self.next_button.disabled = self.current_page >= self.total_pages - 1
-        
-        # Create new embed
-        embed = self.create_stats_embed(self.stats_data, self.current_page)
-        
-        await interaction.response.edit_message(embed=embed, view=self)
-    
-    def create_stats_embed(self, stats_data: Dict, page: int = 0) -> discord.Embed:
-        """Create rankings embed for pagination (Overall% + Relative%)."""
-        filter_label = stats_data.get("filter_label") or ""
-        title = "📊 Rankings — Top Record Holders"
-        if filter_label:
-            title += f" — {filter_label}"
-        embed = discord.Embed(
-            title=title,
-            color=0xff9900,
-            timestamp=datetime.now()
-        )
-
-        ranked = stats_data.get("ranked") or stats_data.get("top_by_percentage") or []
-        start_idx = page * self.players_per_page
-        end_idx = start_idx + self.players_per_page
-        page_players = ranked[start_idx:end_idx]
-        total_cats = stats_data.get("total_categories") or stats_data.get("total_world_records") or 1
-        sum_counts = stats_data.get("sum_counts") or total_cats
-
-        lines = []
-        for i, (player, count) in enumerate(page_players, start_idx + 1):
-            overall = (count / total_cats) * 100
-            relative = (count / sum_counts) * 100
-            lines.append(
-                f"{i}. **{player}** — **{count}** · "
-                f"Overall {overall:.1f}% · Relative {relative:.1f}%"
-            )
-
-        embed.add_field(
-            name="🏆 Most Records",
-            value="\n".join(lines) if lines else "No more players to show.",
-            inline=False
-        )
-        embed.add_field(
-            name="📈 Category Universe",
-            value=(
-                f"**{total_cats}** categories · "
-                f"**{sum_counts}** tied holds counted for Relative%"
-            ),
-            inline=False
-        )
-        embed.set_footer(
-            text=f"Data from FastSnakeStats • {stats_data['date']} • Page {page + 1}/{self.total_pages}"
-        )
-        return embed
-
-class PlayerPaginationView(discord.ui.View):
-    """View for paginating through player holds"""
-    
-    def __init__(self, player_data: Dict, user_id: int, embed_factory):
-        super().__init__(timeout=300)  # 5 minute timeout
-        self.player_data = player_data
-        self.user_id = user_id
-        self.embed_factory = embed_factory
-        self.current_page = 0
-        self.runs_per_page = 5
-        activity_len = len(player_data.get('recent_activity') or [])
-        self.total_pages = max(1, (activity_len + self.runs_per_page - 1) // self.runs_per_page)
-    
-    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
-    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
-            return
-        
-        self.current_page = max(0, self.current_page - 1)
-        await self.update_view(interaction)
-    
-    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
-            return
-        
-        self.current_page = min(self.total_pages - 1, self.current_page + 1)
-        await self.update_view(interaction)
-    
-    async def update_view(self, interaction: discord.Interaction):
-        """Update the view with new page"""
-        self.previous_button.disabled = self.current_page == 0
-        self.next_button.disabled = self.current_page >= self.total_pages - 1
-        embed = self.embed_factory(self.player_data, self.current_page)
-        await interaction.response.edit_message(embed=embed, view=self)
-
-class ReportPaginationView(discord.ui.View):
-    """View for paginating through report results"""
-    
-    def __init__(self, report_data: Dict, user_id: int, embed_factory):
-        super().__init__(timeout=300)  # 5 minute timeout
-        self.report_data = report_data
-        self.embed_factory = embed_factory
-        self.user_id = user_id
-        self.current_page = 0
-        self.items_per_page = 3
-        
-        # Calculate total items and pages
-        all_items = (len(report_data['new_records']) + 
-                    len(report_data['record_changes']) + 
-                    len(report_data['improved_records']))
-        self.total_pages = (all_items + self.items_per_page - 1) // self.items_per_page
-    
-    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
-    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
-            return
-        
-        self.current_page = max(0, self.current_page - 1)
-        await self.update_view(interaction)
-    
-    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
-            return
-        
-        self.current_page = min(self.total_pages - 1, self.current_page + 1)
-        await self.update_view(interaction)
-    
-    async def update_view(self, interaction: discord.Interaction):
-        """Update the view with new page"""
-        # Update button states
-        self.previous_button.disabled = self.current_page == 0
-        self.next_button.disabled = self.current_page >= self.total_pages - 1
-        
-        # Create new embed
-        embed = self.embed_factory(self.report_data, self.current_page)
-        
-        await interaction.response.edit_message(embed=embed, view=self)
-    
 async def setup(bot):
     """Setup function for the cog"""
     await bot.add_cog(FastSnakeStats(bot))

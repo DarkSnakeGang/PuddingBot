@@ -25,6 +25,17 @@ fi
 echo "Starting Ollama..."
 ollama serve &
 OLLAMA_PID=$!
+BOT_PID=""
+
+# PID 1 ignores SIGTERM unless trapped; forward it so `docker stop` is clean
+shutdown() {
+    echo "Shutting down..."
+    [ -n "$BOT_PID" ] && kill -TERM "$BOT_PID" 2>/dev/null
+    kill -TERM "$OLLAMA_PID" 2>/dev/null
+    wait
+    exit 0
+}
+trap shutdown TERM INT
 
 echo "Waiting for Ollama to be ready..."
 sleep 10
@@ -42,8 +53,11 @@ if ollama list | grep -q "${OLLAMA_MODEL}"; then
     echo "Model ${OLLAMA_MODEL} already exists, skipping download!"
 else
     echo "Downloading ${OLLAMA_MODEL} model (this can take a while)..."
-    ollama pull "${OLLAMA_MODEL}"
-    echo "Model downloaded successfully!"
+    if ollama pull "${OLLAMA_MODEL}"; then
+        echo "Model downloaded successfully!"
+    else
+        echo "Warning: failed to pull ${OLLAMA_MODEL}; AI chat may be unavailable"
+    fi
 fi
 
 echo "Starting Discord bot (update restart loop enabled)..."
@@ -57,16 +71,19 @@ install_native_dfs() {
 
 install_native_dfs
 
-BOT_EXIT_CODE=0
 while true; do
+    BOT_EXIT_CODE=0
     # Ensure configured model exists (covers /update model changes without full container rebuild)
     if ! ollama list 2>/dev/null | grep -q "${OLLAMA_MODEL}"; then
         echo "Ollama model ${OLLAMA_MODEL} missing — pulling before starting bot..."
         ollama pull "${OLLAMA_MODEL}" || echo "Warning: failed to pull ${OLLAMA_MODEL}"
     fi
 
-    python3 -u main.py
-    BOT_EXIT_CODE=$?
+    # `|| ...` keeps set -e from killing the restart loop on a non-zero exit (incl. 42)
+    python3 -u main.py &
+    BOT_PID=$!
+    wait "$BOT_PID" || BOT_EXIT_CODE=$?
+    BOT_PID=""
     if [ "$BOT_EXIT_CODE" -eq "$RESTART_EXIT_CODE" ]; then
         echo "Update restart requested, reloading bot..."
         install_native_dfs

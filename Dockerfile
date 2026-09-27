@@ -22,6 +22,7 @@ RUN apt-get update && apt-get install -y \
     python3-venv \
     python3-dev \
     build-essential \
+    fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Ollama
@@ -30,21 +31,21 @@ RUN curl -fsSL https://ollama.ai/install.sh | sh
 # Set the working directory inside the container
 WORKDIR /app
 
+# Install Python dependencies first so code changes don't invalidate this layer
+COPY requirements.txt /app/requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt
+
 # Copy the current directory contents into the container at /app
 COPY . /app
 
-# Install Python dependencies + native C Warnsdorff DFS
-RUN pip3 install --no-cache-dir -r requirements.txt \
-    && pip3 install --no-cache-dir /app/native
+# Native C Warnsdorff DFS
+RUN pip3 install --no-cache-dir /app/native
 
 # Startup script handles git init, Ollama, and bot restart loop
 RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
 
 # Create volume for Ollama models
 VOLUME ["/root/.ollama"]
-
-# Make port 8080 available to the world outside this container (if needed)
-EXPOSE 8080
 
 # Run the startup script when the container launches
 CMD ["/app/start.sh"]

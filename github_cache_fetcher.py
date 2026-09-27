@@ -1,12 +1,29 @@
-import os
-import requests
+import asyncio
 import json
-from typing import Optional, Dict, List, Any
+import os
+import time
+from collections import OrderedDict
 from datetime import datetime
+from typing import Any, Awaitable, Callable, Dict, List, Optional
+
+import requests
+
+CACHE_TTL_SECONDS = 3600
+# After a failed refresh, keep serving the previous copy and retry after this long
+FAILURE_RETRY_SECONDS = 120
+SNAPSHOT_CACHE_SIZE = 64
+
+
+def _updated_stamp(data: Optional[Dict]) -> str:
+    if not data:
+        return ''
+    meta = data.get('meta') or {}
+    return str(meta.get('lastUpdated') or data.get('lastUpdated') or '')
+
 
 class GitHubCacheFetcher:
     """Fetches world records from FastSnakeStats runs-derived WR timelines."""
-    
+
     def __init__(self):
         self.base_url = 'https://raw.githubusercontent.com/DarkSnakeGang/FastSnakeStats/refs/heads/main'
         self.runs_dates_url = f"{self.base_url}/time-travel-cache/metadata/available-dates-runs.json"
@@ -38,16 +55,12 @@ class GitHubCacheFetcher:
             self._local_fss_root, 'metadata', 'chronicle.json'
         )
         self.fallback_to_api = True
-        self._runs_dates: Optional[Dict] = None
-        self._timelines: Optional[Dict] = None
-        self._player_stats_cache: Optional[Dict] = None
-        self._player_stats_cache_fetched_at: Optional[datetime] = None
-        self._statistics_explorer_cache: Optional[Dict] = None
-        self._statistics_explorer_cache_fetched_at: Optional[datetime] = None
-        self._mastery_challenge_cache: Optional[Dict] = None
-        self._mastery_challenge_cache_fetched_at: Optional[datetime] = None
-        self._chronicle_cache: Optional[Dict] = None
-        self._chronicle_cache_fetched_at: Optional[datetime] = None
+        # name -> {'data', 'expires', 'attempted'} (monotonic seconds)
+        self._cache: Dict[str, Dict[str, Any]] = {}
+        self._locks: Dict[str, asyncio.Lock] = {}
+        # date -> derived day snapshot, valid for `_snapshots_source` only
+        self._snapshots: "OrderedDict[str, Dict]" = OrderedDict()
+        self._snapshots_source: Optional[Dict] = None
 
     def _load_local_json(self, path: str) -> Optional[Dict]:
         if not os.path.isfile(path):
@@ -59,51 +72,126 @@ class GitHubCacheFetcher:
             print(f'Error reading local JSON {path}: {error}')
             return None
 
-    def _load_runs_dates(self) -> Optional[Dict]:
-        """Load available-dates-runs.json (local sibling first, then GitHub)."""
-        if self._runs_dates is not None:
-            return self._runs_dates
+    async def _load_local_json_async(self, path: str) -> Optional[Dict]:
+        return await asyncio.to_thread(self._load_local_json, path)
 
-        local = self._load_local_json(self._local_runs_dates_path)
-        if local and local.get('availableDates'):
-            self._runs_dates = local
-            return self._runs_dates
-
-        try:
-            response = requests.get(self.runs_dates_url, timeout=15)
-            if response.ok:
-                metadata = response.json()
-                if metadata.get('availableDates'):
-                    self._runs_dates = metadata
-                    return self._runs_dates
-            print('Runs-derived dates metadata not available')
-        except Exception as error:
-            print(f'Error fetching runs-derived dates: {error}')
-        return None
-
-    def _load_timelines(self) -> Optional[Dict]:
-        """Load wr-timelines.json once (local sibling first, then GitHub)."""
-        if self._timelines is not None:
-            return self._timelines
-
-        local = self._load_local_json(self._local_timelines_path)
-        if local and local.get('boards'):
-            self._timelines = local
-            print('Loaded local runs-derived WR timelines')
-            return self._timelines
-
-        try:
-            print('Fetching runs-derived WR timelines from GitHub...')
-            response = requests.get(self.timelines_url, timeout=120)
-            if not response.ok:
-                print(f'WR timelines not available ({response.status_code})')
-                return None
-            self._timelines = response.json()
-            print('Successfully loaded runs-derived WR timelines')
-            return self._timelines
-        except Exception as error:
-            print(f'Error fetching WR timelines: {error}')
+    @staticmethod
+    def _get_json_blocking(url: str, timeout: float) -> Optional[Dict]:
+        response = requests.get(url, timeout=timeout)
+        if not response.ok:
+            print(f'GitHub fetch failed ({response.status_code}): {url}')
             return None
+        return response.json()
+
+    async def _fetch_remote_json(self, url: str, timeout: float) -> Optional[Dict]:
+        try:
+            return await asyncio.to_thread(self._get_json_blocking, url, timeout)
+        except Exception as error:
+            print(f'Error fetching {url}: {error}')
+            return None
+
+    async def _cached(
+        self,
+        name: str,
+        loader: Callable[[], Awaitable[Optional[Dict]]],
+        force_refresh: bool = False,
+    ) -> Optional[Dict]:
+        """Serve `name` from memory; reload at most once at a time, backing off on failure."""
+        started = time.monotonic()
+        entry = self._cache.get(name)
+        if not force_refresh and entry and started < entry['expires']:
+            return entry['data']
+
+        lock = self._locks.setdefault(name, asyncio.Lock())
+        async with lock:
+            entry = self._cache.get(name)
+            if entry and entry['attempted'] >= started:
+                return entry['data']
+            try:
+                data = await loader()
+            except Exception as error:
+                print(f'Error loading {name}: {error}')
+                data = None
+            now = time.monotonic()
+            if data is None:
+                previous = entry['data'] if entry else None
+                self._cache[name] = {
+                    'data': previous,
+                    'expires': now + FAILURE_RETRY_SECONDS,
+                    'attempted': now,
+                }
+                return previous
+            self._cache[name] = {
+                'data': data,
+                'expires': now + CACHE_TTL_SECONDS,
+                'attempted': now,
+            }
+            return data
+
+    async def _load_fresher(
+        self, local_path: str, url: str, timeout: float, valid: Callable[[Dict], bool]
+    ) -> Optional[Dict]:
+        """Load local sibling + GitHub copies and keep whichever was updated last."""
+        local, remote = await asyncio.gather(
+            self._load_local_json_async(local_path),
+            self._fetch_remote_json(url, timeout),
+        )
+        local = local if local and valid(local) else None
+        remote = remote if remote and valid(remote) else None
+        if local and remote:
+            return local if _updated_stamp(local) > _updated_stamp(remote) else remote
+        return remote or local
+
+    async def _get_runs_dates(self, force_refresh: bool = False) -> Optional[Dict]:
+        """available-dates-runs.json (fresher of local sibling / GitHub)."""
+        return await self._cached(
+            'runs_dates',
+            lambda: self._load_fresher(
+                self._local_runs_dates_path,
+                self.runs_dates_url,
+                15,
+                lambda d: bool(d.get('availableDates')),
+            ),
+            force_refresh,
+        )
+
+    @staticmethod
+    def _index_run_first_seen(timelines: Dict) -> Dict:
+        """Attach run id -> first timeline date, used as the run's real date."""
+        first_seen: Dict[str, str] = {}
+        for timeline in ((timelines or {}).get('boards') or {}).values():
+            for event in timeline or []:
+                day = event.get('d')
+                if not day:
+                    continue
+                for run in event.get('runs') or []:
+                    run_id = run.get('id')
+                    if run_id and run_id not in first_seen:
+                        first_seen[run_id] = day
+        timelines['_runFirstSeen'] = first_seen
+        return timelines
+
+    async def _load_timelines_fresh(self) -> Optional[Dict]:
+        print('Loading runs-derived WR timelines...')
+        data = await self._load_fresher(
+            self._local_timelines_path,
+            self.timelines_url,
+            120,
+            lambda d: bool(d.get('boards')),
+        )
+        if not data:
+            print('WR timelines not available')
+            return None
+        return await asyncio.to_thread(self._index_run_first_seen, data)
+
+    async def _get_timelines(self, force_refresh: bool = False) -> Optional[Dict]:
+        """wr-timelines.json (fresher of local sibling / GitHub)."""
+        return await self._cached('timelines', self._load_timelines_fresh, force_refresh)
+
+    async def refresh_world_records(self) -> None:
+        """Force-reload dates + timelines (used before WR watch probes)."""
+        await self._get_runs_dates(force_refresh=True)
+        await self._get_timelines(force_refresh=True)
 
     @staticmethod
     def _wr_as_of(timeline: List[Dict], date: str) -> List[Dict]:
@@ -127,6 +215,7 @@ class GitHubCacheFetcher:
     def _build_derived_day(self, timelines: Dict, date: str) -> Dict:
         """Expand compact timeline runs into daily-cache-compatible records."""
         boards = (timelines or {}).get('boards') or {}
+        first_seen = (timelines or {}).get('_runFirstSeen') or {}
         records: Dict[str, Any] = {}
         for category, timeline in boards.items():
             top = self._wr_as_of(timeline or [], date)
@@ -146,7 +235,8 @@ class GitHubCacheFetcher:
                     settings_count,
                 ],
                 'runs': [
-                    self._expand_compact_run(run, date) for run in top
+                    self._expand_compact_run(run, first_seen.get(run.get('id')) or date)
+                    for run in top
                 ],
             }
         return {
@@ -189,18 +279,18 @@ class GitHubCacheFetcher:
             'players': {'data': [player]},
             'values': {},
         }
-    
+
     async def get_most_recent_date(self) -> Optional[str]:
         """Get the most recent available date from runs-derived metadata"""
         try:
-            metadata = self._load_runs_dates()
+            metadata = await self._get_runs_dates()
             if metadata and metadata.get('availableDates'):
                 return metadata['availableDates'][-1]
             print('Runs-derived dates metadata not available')
         except Exception as error:
             print(f'Error fetching most recent date: {error}')
         return None
-    
+
     async def is_date_available(self, date: str) -> bool:
         """Check if a specific date is available in runs-derived cache"""
         try:
@@ -209,16 +299,27 @@ class GitHubCacheFetcher:
         except Exception as error:
             print(f'Error checking date availability: {error}')
             return False
-    
+
     async def fetch_cache_for_date(self, date: str) -> Optional[Dict]:
-        """Build a day snapshot from runs-derived WR timelines"""
+        """Build (memoized) day snapshot from runs-derived WR timelines"""
         try:
-            timelines = self._load_timelines()
+            timelines = await self._get_timelines()
             if not timelines:
                 print(f"WR timelines unavailable; cannot build snapshot for {date}")
                 return None
-            print(f"Built runs-derived snapshot for {date}")
-            return self._build_derived_day(timelines, date)
+            if self._snapshots_source is not timelines:
+                self._snapshots.clear()
+                self._snapshots_source = timelines
+            snapshot = self._snapshots.get(date)
+            if snapshot is not None:
+                self._snapshots.move_to_end(date)
+                return snapshot
+            snapshot = await asyncio.to_thread(self._build_derived_day, timelines, date)
+            if self._snapshots_source is timelines:
+                self._snapshots[date] = snapshot
+            while len(self._snapshots) > SNAPSHOT_CACHE_SIZE:
+                self._snapshots.popitem(last=False)
+            return snapshot
         except Exception as error:
             print(f"Error building runs-derived cache for {date}: {error}")
             return None
@@ -288,7 +389,7 @@ class GitHubCacheFetcher:
     async def get_available_dates(self) -> List[str]:
         """Get available dates from runs-derived metadata"""
         try:
-            metadata = self._load_runs_dates()
+            metadata = await self._get_runs_dates()
             if not metadata:
                 return []
             return metadata.get('availableDates', [])
@@ -342,7 +443,7 @@ class GitHubCacheFetcher:
     async def is_github_cache_available(self) -> bool:
         """Check if runs-derived cache is accessible"""
         try:
-            metadata = self._load_runs_dates()
+            metadata = await self._get_runs_dates()
             return bool(metadata and metadata.get('availableDates'))
         except Exception as error:
             print(f'Error checking GitHub cache availability: {error}')
@@ -351,7 +452,7 @@ class GitHubCacheFetcher:
     async def get_cache_stats(self) -> Optional[Dict]:
         """Get cache statistics from runs-derived metadata"""
         try:
-            metadata = self._load_runs_dates()
+            metadata = await self._get_runs_dates()
             if not metadata:
                 return None
 
@@ -376,27 +477,11 @@ class GitHubCacheFetcher:
 
     async def fetch_player_stats_metadata(self, force_refresh: bool = False) -> Optional[Dict]:
         """Fetch player peak-stats metadata (cached in memory for 1 hour)."""
-        try:
-            if (
-                not force_refresh
-                and self._player_stats_cache is not None
-                and self._player_stats_cache_fetched_at is not None
-                and (datetime.utcnow() - self._player_stats_cache_fetched_at).total_seconds() < 3600
-            ):
-                return self._player_stats_cache
-
-            response = requests.get(self.player_stats_url, timeout=20)
-            if not response.ok:
-                print('Player stats metadata not available')
-                return self._player_stats_cache
-
-            metadata = response.json()
-            self._player_stats_cache = metadata
-            self._player_stats_cache_fetched_at = datetime.utcnow()
-            return metadata
-        except Exception as error:
-            print(f'Error fetching player stats metadata: {error}')
-            return self._player_stats_cache
+        return await self._cached(
+            'player_stats',
+            lambda: self._fetch_remote_json(self.player_stats_url, 20),
+            force_refresh,
+        )
 
     async def search_player_names(self, query: str, limit: int = 25) -> List[str]:
         """Player names from player-stats.json (startswith, then contains)."""
@@ -600,39 +685,15 @@ class GitHubCacheFetcher:
             return local
         return remote
 
+    async def _load_statistics_explorer(self) -> Optional[Dict]:
+        remote = await self._fetch_remote_json(self.statistics_explorer_url, 60)
+        return await asyncio.to_thread(self._prefer_explorer_with_career, remote)
+
     async def fetch_statistics_explorer(self, force_refresh: bool = False) -> Optional[Dict]:
         """Fetch statistics-explorer metadata (cached in memory for 1 hour)."""
-        try:
-            if (
-                not force_refresh
-                and self._statistics_explorer_cache is not None
-                and self._statistics_explorer_cache_fetched_at is not None
-                and (datetime.utcnow() - self._statistics_explorer_cache_fetched_at).total_seconds() < 3600
-            ):
-                return self._statistics_explorer_cache
-
-            metadata = None
-            response = requests.get(self.statistics_explorer_url, timeout=60)
-            if response.ok:
-                metadata = response.json()
-            else:
-                print('Statistics explorer metadata not available from GitHub')
-
-            metadata = self._prefer_explorer_with_career(metadata)
-            if metadata is None:
-                return self._statistics_explorer_cache
-
-            self._statistics_explorer_cache = metadata
-            self._statistics_explorer_cache_fetched_at = datetime.utcnow()
-            return metadata
-        except Exception as error:
-            print(f'Error fetching statistics explorer metadata: {error}')
-            local = self._prefer_explorer_with_career(None)
-            if local is not None:
-                self._statistics_explorer_cache = local
-                self._statistics_explorer_cache_fetched_at = datetime.utcnow()
-                return local
-            return self._statistics_explorer_cache
+        return await self._cached(
+            'statistics_explorer', self._load_statistics_explorer, force_refresh
+        )
 
     async def get_progression(self, settings_key: str) -> Optional[List[Dict]]:
         """Get WR progression timeline for a category key."""
@@ -773,42 +834,15 @@ class GitHubCacheFetcher:
             return local
         return remote
 
+    async def _load_mastery_challenge(self) -> Optional[Dict]:
+        remote = await self._fetch_remote_json(self.mastery_challenge_url, 30)
+        return await asyncio.to_thread(self._prefer_mastery_challenge, remote)
+
     async def fetch_mastery_challenge(self, force_refresh: bool = False) -> Optional[Dict]:
         """Fetch mastery-challenge metadata (cached in memory for 1 hour)."""
-        try:
-            if (
-                not force_refresh
-                and self._mastery_challenge_cache is not None
-                and self._mastery_challenge_cache_fetched_at is not None
-                and (datetime.utcnow() - self._mastery_challenge_cache_fetched_at).total_seconds() < 3600
-            ):
-                return self._mastery_challenge_cache
-
-            response = requests.get(self.mastery_challenge_url, timeout=30)
-            remote = response.json() if response.ok else None
-            if not response.ok:
-                print(f'GitHub mastery challenge not available ({response.status_code})')
-
-            data = self._prefer_mastery_challenge(remote)
-            if data:
-                self._mastery_challenge_cache = data
-                self._mastery_challenge_cache_fetched_at = datetime.utcnow()
-                return data
-
-            local = self._prefer_mastery_challenge(None)
-            if local:
-                self._mastery_challenge_cache = local
-                self._mastery_challenge_cache_fetched_at = datetime.utcnow()
-                return local
-            return self._mastery_challenge_cache
-        except Exception as error:
-            print(f'Error fetching mastery challenge: {error}')
-            local = self._prefer_mastery_challenge(None)
-            if local:
-                self._mastery_challenge_cache = local
-                self._mastery_challenge_cache_fetched_at = datetime.utcnow()
-                return local
-            return self._mastery_challenge_cache
+        return await self._cached(
+            'mastery_challenge', self._load_mastery_challenge, force_refresh
+        )
 
     async def get_mastery_player(
         self, player_id: Optional[str] = None, player_name: Optional[str] = None
@@ -852,42 +886,13 @@ class GitHubCacheFetcher:
             return local
         return remote
 
+    async def _load_chronicle(self) -> Optional[Dict]:
+        remote = await self._fetch_remote_json(self.chronicle_url, 60)
+        return await asyncio.to_thread(self._prefer_chronicle, remote)
+
     async def fetch_chronicle(self, force_refresh: bool = False) -> Optional[Dict]:
         """Fetch chronicle metadata (cached in memory for 1 hour)."""
-        try:
-            if (
-                not force_refresh
-                and self._chronicle_cache is not None
-                and self._chronicle_cache_fetched_at is not None
-                and (datetime.utcnow() - self._chronicle_cache_fetched_at).total_seconds() < 3600
-            ):
-                return self._chronicle_cache
-
-            response = requests.get(self.chronicle_url, timeout=60)
-            remote = response.json() if response.ok else None
-            if not response.ok:
-                print(f'GitHub chronicle not available ({response.status_code})')
-
-            data = self._prefer_chronicle(remote)
-            if data:
-                self._chronicle_cache = data
-                self._chronicle_cache_fetched_at = datetime.utcnow()
-                return data
-
-            local = self._prefer_chronicle(None)
-            if local:
-                self._chronicle_cache = local
-                self._chronicle_cache_fetched_at = datetime.utcnow()
-                return local
-            return self._chronicle_cache
-        except Exception as error:
-            print(f'Error fetching chronicle: {error}')
-            local = self._prefer_chronicle(None)
-            if local:
-                self._chronicle_cache = local
-                self._chronicle_cache_fetched_at = datetime.utcnow()
-                return local
-            return self._chronicle_cache
+        return await self._cached('chronicle', self._load_chronicle, force_refresh)
 
     async def get_chronicle_era(self, date: Optional[str] = None) -> Optional[Dict]:
         """Get an era newspaper day (default: latest chronological loud day)."""
