@@ -5645,16 +5645,16 @@ class ListPaginationView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("âŒ This pagination is not for you!", ephemeral=True)
+            await interaction.response.send_message("❌ This pagination is not for you!", ephemeral=True)
             return False
         return True
 
-    @discord.ui.button(label="â—€ï¸ Previous", style=discord.ButtonStyle.gray, disabled=True)
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.gray, disabled=True)
     async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.current_page = max(0, self.current_page - 1)
         await self.update_view(interaction)
 
-    @discord.ui.button(label="Next â–¶ï¸", style=discord.ButtonStyle.gray)
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.gray)
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.current_page = min(self.total_pages - 1, self.current_page + 1)
         await self.update_view(interaction)
