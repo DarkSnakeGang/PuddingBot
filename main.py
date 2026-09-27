@@ -122,17 +122,12 @@ async def send_message(message: Message, user_message: str, user="Nobody") -> No
         def status_notify(text: str) -> None:
             asyncio.run_coroutine_threadsafe(target.send(text), loop)
 
-        if wall.is_pattern_message(user_message):
-            cleaned = wall.parse_pattern_input(user_message)
-            if not cleaned:
-                await target.send(
-                    "Use `/wallall` or paste pudding copy (`pattern` plus a 90-cell 1/2 grid)."
-                )
-                return
-            if len(cleaned) != 90:
-                await target.send(
-                    "I can solve only Small Board patterns, so I'm expecting exactly 90 characters"
-                )
+        cleaned = wall.parse_pattern_input(user_message) if wall.is_pattern_message(user_message) else ""
+        # "pattern" alone (or in a sentence) is chat, not a grid paste
+        if len(cleaned) >= wall_stream.MIN_PATTERN_CELLS:
+            problem = wall_stream.pattern_input_error(cleaned)
+            if problem:
+                await target.send(problem)
                 return
             try:
                 await wall_stream.stream_pattern_solve(
@@ -140,10 +135,13 @@ async def send_message(message: Message, user_message: str, user="Nobody") -> No
                     lambda result: wall_stream.send_pattern_message(target, result),
                     wall_stream.edit_pattern_message,
                 )
+            except wall_stream.SolverBusy:
+                await target.send(wall_stream.BUSY_MESSAGE)
             except asyncio.TimeoutError:
-                await target.send(
-                    "Solve timed out after 45s. Try a different pattern (or one with more walls)."
-                )
+                await target.send(wall_stream.TIMEOUT_MESSAGE)
+            except Exception:
+                traceback.print_exc()
+                await target.send(wall_stream.FAILED_MESSAGE)
             return
 
         # "how many records does X have?" → /player profile embed

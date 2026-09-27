@@ -1,7 +1,6 @@
 from random import choice, randint
 import requests as rq
 from . import gpt
-import wall
 import os
 import re
 import threading
@@ -374,12 +373,6 @@ def get_response(user_input: str, user="Nobody", status_notify=None) -> str:
     
     if 'i completely agree' == lowered[:len('I completely agree')]:
         return 'https://klipy.com/gifs/i-completely-agree-i-agree'
-
-    if wall.is_pattern_message(user_input):
-        cleaned = wall.parse_pattern_input(user_input)
-        if not cleaned:
-            return "Use `/wallall` or paste pudding copy (`pattern` plus a 90-cell 1/2 grid)."
-        return wall.check_pattern(cleaned)
 
     if wants_fastsnakestats_link(user_input):
         return FASTSNAKESTATS_URL

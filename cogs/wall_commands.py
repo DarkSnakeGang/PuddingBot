@@ -11,8 +11,6 @@ from discord.ext import commands
 import wall
 from wall import stream as wall_stream
 
-SOLVE_TIMEOUT_SECONDS = wall_stream.FIRST_SOLVE_TIMEOUT
-
 
 class WallAll(commands.Cog):
     """Small-board Wall All pattern solver."""
@@ -31,12 +29,9 @@ class WallAll(commands.Cog):
         self, interaction: discord.Interaction, grid: app_commands.Range[str, 1, 600]
     ) -> None:
         cleaned = wall.parse_pattern_input(grid)
-        if len(cleaned) != 90:
-            await interaction.response.send_message(
-                f"Small board only: send exactly 90 cells of `0`/`1` or `1`/`2`. "
-                f"Got **{len(cleaned)}** after stripping other characters.",
-                ephemeral=True,
-            )
+        problem = wall_stream.pattern_input_error(cleaned)
+        if problem:
+            await interaction.response.send_message(problem, ephemeral=True)
             return
 
         await interaction.response.defer()
@@ -54,13 +49,18 @@ class WallAll(commands.Cog):
             await wall_stream.stream_pattern_solve(
                 cleaned, send, wall_stream.edit_pattern_message
             )
+            return
+        except wall_stream.SolverBusy:
+            reply = wall_stream.BUSY_MESSAGE
         except asyncio.TimeoutError:
-            await interaction.followup.send(
-                "Solve timed out after 45s. Try a different pattern (or one with more walls)."
-            )
+            reply = wall_stream.TIMEOUT_MESSAGE
         except Exception as error:
-            print(f"Error in /wallall: {error}")
-            await interaction.followup.send("Failed to solve that pattern.")
+            print(f"Error in /wallall: {type(error).__name__}: {error}")
+            reply = wall_stream.FAILED_MESSAGE
+        try:
+            await interaction.followup.send(reply)
+        except discord.HTTPException as error:
+            print(f"/wallall could not send error reply: {error}")
 
 
 async def setup(bot: commands.Bot):
