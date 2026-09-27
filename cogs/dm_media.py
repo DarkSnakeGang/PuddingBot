@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import os
@@ -13,7 +14,9 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 import aiohttp
 import discord
 from discord.ext import commands
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
+
+import net_safety
 
 URL_RE = re.compile(r"https?://[^\s<>)\]]+", re.IGNORECASE)
 
@@ -52,10 +55,15 @@ USER_AGENT = (
     "Mozilla/5.0 (compatible; PuddingBot/1.0; +https://github.com/DarkSnakeGang/PuddingBot)"
 )
 MAX_PAGE_BYTES = 5 * 1024 * 1024
-MAX_MEDIA_BYTES = 25 * 1024 * 1024
+# Discord rejects larger uploads, so don't download anything bigger
+UPLOAD_LIMIT_BYTES = int(os.getenv("DM_UPLOAD_LIMIT_BYTES", str(10 * 1024 * 1024)))
+MAX_MEDIA_BYTES = min(25 * 1024 * 1024, UPLOAD_LIMIT_BYTES)
+MAX_JOB_BYTES = 100 * 1024 * 1024
 MAX_MEDIA_ITEMS = 25
 MAX_PAGES = 1
 FETCH_TIMEOUT = aiohttp.ClientTimeout(total=45)
+JOB_TIMEOUT_SECONDS = 120
+MAX_CONCURRENT_JOBS = 2
 FILES_PER_MESSAGE = 10
 
 # Query keys that usually mean a resized/thumbnail CDN variant
@@ -165,7 +173,8 @@ def _image_pixel_area(blob: bytes) -> Optional[int]:
         with Image.open(io.BytesIO(blob)) as img:
             width, height = img.size
             return int(width) * int(height)
-    except (UnidentifiedImageError, OSError, ValueError):
+    except Exception:
+        # Includes DecompressionBombError for absurd dimensions
         return None
 
 
@@ -290,7 +299,7 @@ def extract_media_urls_from_html(base_url: str, html: str) -> List[str]:
 
     # Also scrape any absolute media URLs embedded in the HTML text
     for match in re.finditer(
-        r"https?://[^\s\"'<>]+?\.(?:webp|jpe?g|png|gif|mp4|webm|mov|m4v|avi|avif|bmp|svg|apng)(?:\?[^\s\"'<>]*)?",
+        r"https?://[^\s\"'<>]{1,2048}?\.(?:webp|jpe?g|png|gif|mp4|webm|mov|m4v|avi|avif|bmp|svg|apng)(?:\?[^\s\"'<>]{0,2048})?",
         html,
         re.IGNORECASE,
     ):
@@ -302,21 +311,10 @@ def extract_media_urls_from_html(base_url: str, html: str) -> List[str]:
 async def _fetch_bytes(
     session: aiohttp.ClientSession, url: str, limit: int
 ) -> Tuple[bytes, str]:
-    async with session.get(url, allow_redirects=True) as resp:
-        if resp.status >= 400:
-            raise ValueError(f"HTTP {resp.status}")
-        content_type = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-        cl = resp.headers.get("Content-Length")
-        if cl and int(cl) > limit:
-            raise ValueError("too large")
-        chunks: List[bytes] = []
-        size = 0
-        async for chunk in resp.content.iter_chunked(64 * 1024):
-            size += len(chunk)
-            if size > limit:
-                raise ValueError("too large")
-            chunks.append(chunk)
-        return b"".join(chunks), content_type
+    _final_url, content_type, data = await net_safety.fetch_bytes_async(
+        session, url, max_bytes=limit
+    )
+    return data, content_type
 
 
 def _is_media_content_type(content_type: str, url: str) -> bool:
@@ -345,17 +343,20 @@ async def collect_media_from_url(
             return [(page_url, data, content_type)]
         return []
 
-    html = data.decode("utf-8", errors="replace")
+    html = data[:MAX_PAGE_BYTES].decode("utf-8", errors="replace")
     # Fetch extra candidates so thumbnail+full pairs can be resolved later
-    candidates = extract_media_urls_from_html(page_url, html)[: MAX_MEDIA_ITEMS * 3]
+    candidates = (
+        await asyncio.to_thread(extract_media_urls_from_html, page_url, html)
+    )[: MAX_MEDIA_ITEMS * 3]
 
     results: List[Tuple[str, bytes, str]] = []
+    job_bytes = len(data)
     for media_url in candidates:
-        if len(results) >= MAX_MEDIA_ITEMS * 3:
+        if len(results) >= MAX_MEDIA_ITEMS * 3 or job_bytes >= MAX_JOB_BYTES:
             break
         try:
             media_bytes, media_ct = await _fetch_bytes(
-                session, media_url, MAX_MEDIA_BYTES
+                session, media_url, min(MAX_MEDIA_BYTES, MAX_JOB_BYTES - job_bytes)
             )
         except Exception:
             continue
@@ -363,8 +364,30 @@ async def collect_media_from_url(
             continue
         if media_ct.startswith("text/"):
             continue
+        job_bytes += len(media_bytes)
         results.append((media_url, media_bytes, media_ct))
-    return prefer_full_over_thumbnails(results)[:MAX_MEDIA_ITEMS]
+    best = await asyncio.to_thread(prefer_full_over_thumbnails, results)
+    return best[:MAX_MEDIA_ITEMS]
+
+
+def _upload_batches(
+    items: List[Tuple[str, bytes, str]],
+) -> List[List[Tuple[int, str, bytes, str]]]:
+    """Group files so each message stays under the file-count and upload-size limits."""
+    batches: List[List[Tuple[int, str, bytes, str]]] = []
+    current: List[Tuple[int, str, bytes, str]] = []
+    size = 0
+    for index, (url, blob, ct) in enumerate(items, start=1):
+        if len(blob) > UPLOAD_LIMIT_BYTES:
+            continue
+        if current and (len(current) >= FILES_PER_MESSAGE or size + len(blob) > UPLOAD_LIMIT_BYTES):
+            batches.append(current)
+            current, size = [], 0
+        current.append((index, url, blob, ct))
+        size += len(blob)
+    if current:
+        batches.append(current)
+    return batches
 
 
 class DmMedia(commands.Cog):
@@ -372,7 +395,8 @@ class DmMedia(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._busy: set[int] = set()
+        self._busy_users: set[int] = set()
+        self._slots = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -380,48 +404,24 @@ class DmMedia(commands.Cog):
             return
         if message.guild is not None:
             return
-        if message.id in self._busy:
-            return
 
         urls = [_strip_url(m.group(0)) for m in URL_RE.finditer(message.content or "")]
         urls = list(dict.fromkeys(urls))[:MAX_PAGES]
         if not urls:
             return
+        if message.author.id in self._busy_users:
+            await message.channel.send("Still working on your last link, hang on.")
+            return
 
-        self._busy.add(message.id)
+        self._busy_users.add(message.author.id)
         status: Optional[discord.Message] = None
         try:
             status = await message.channel.send("Fetching media from that link…")
-            headers = {"User-Agent": USER_AGENT, "Accept": "*/*"}
-            async with aiohttp.ClientSession(
-                headers=headers, timeout=FETCH_TIMEOUT
-            ) as session:
-                all_media: List[Tuple[str, bytes, str]] = []
-                seen_urls: Set[str] = set()
-                for page_url in urls:
-                    try:
-                        found = await collect_media_from_url(session, page_url)
-                    except Exception as error:
-                        await message.channel.send(
-                            f"Could not open `{page_url}`: {error}"
-                        )
-                        continue
-                    for item in found:
-                        if item[0] in seen_urls:
-                            continue
-                        seen_urls.add(item[0])
-                        all_media.append(item)
-                        if len(all_media) >= MAX_MEDIA_ITEMS:
-                            break
-                    if len(all_media) >= MAX_MEDIA_ITEMS:
-                        break
+            async with self._slots:
+                all_media = await asyncio.wait_for(
+                    self._collect(message, urls), timeout=JOB_TIMEOUT_SECONDS
+                )
 
-            if not all_media:
-                if status:
-                    await status.edit(content="No images or videos found on that page.")
-                return
-
-            all_media = prefer_full_over_thumbnails(all_media)
             if not all_media:
                 if status:
                     await status.edit(content="No images or videos found on that page.")
@@ -429,12 +429,11 @@ class DmMedia(commands.Cog):
 
             # Send in batches; delete status after first successful send
             sent_any = False
-            for start in range(0, len(all_media), FILES_PER_MESSAGE):
-                batch = all_media[start : start + FILES_PER_MESSAGE]
-                files: List[discord.File] = []
-                for i, (url, blob, ct) in enumerate(batch, start=start + 1):
-                    filename = _filename_for(url, ct, i)
-                    files.append(discord.File(io.BytesIO(blob), filename=filename))
+            for batch in _upload_batches(all_media):
+                files = [
+                    discord.File(io.BytesIO(blob), filename=_filename_for(url, ct, i))
+                    for i, url, blob, ct in batch
+                ]
                 await message.channel.send(files=files)
                 sent_any = True
 
@@ -444,16 +443,53 @@ class DmMedia(commands.Cog):
                 except Exception:
                     pass
             elif status:
-                await status.edit(content=f"Found {len(all_media)} media file(s).")
-        except Exception as error:
-            print(f"[dm-media] Failed: {error}")
+                await status.edit(content="The media on that page is too large to upload here.")
+        except asyncio.TimeoutError:
             if status:
                 try:
-                    await status.edit(content=f"Failed to fetch media: {error}")
+                    await status.edit(content="That page took too long to process.")
+                except Exception:
+                    pass
+        except Exception as error:
+            print(f"[dm-media] Failed: {type(error).__name__}: {error}")
+            if status:
+                try:
+                    await status.edit(content="Failed to fetch media from that link.")
                 except Exception:
                     pass
         finally:
-            self._busy.discard(message.id)
+            self._busy_users.discard(message.author.id)
+
+    async def _collect(
+        self, message: discord.Message, urls: List[str]
+    ) -> List[Tuple[str, bytes, str]]:
+        headers = {"User-Agent": USER_AGENT, "Accept": "*/*"}
+        all_media: List[Tuple[str, bytes, str]] = []
+        seen_urls: Set[str] = set()
+        async with net_safety.public_session(headers=headers, timeout=FETCH_TIMEOUT) as session:
+            for page_url in urls:
+                try:
+                    found = await collect_media_from_url(session, page_url)
+                except net_safety.UnsafeURL as error:
+                    await message.channel.send(f"Could not open that link: {error}")
+                    continue
+                except net_safety.TooLarge:
+                    await message.channel.send("That file is too large to send here.")
+                    continue
+                except Exception as error:
+                    print(f"[dm-media] Could not open {page_url}: {type(error).__name__}: {error}")
+                    await message.channel.send("Could not open that link.")
+                    continue
+                for item in found:
+                    if item[0] in seen_urls:
+                        continue
+                    seen_urls.add(item[0])
+                    all_media.append(item)
+                    if len(all_media) >= MAX_MEDIA_ITEMS:
+                        break
+                if len(all_media) >= MAX_MEDIA_ITEMS:
+                    break
+        return await asyncio.to_thread(prefer_full_over_thumbnails, all_media)
 
 
 async def setup(bot: commands.Bot):

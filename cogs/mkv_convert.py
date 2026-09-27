@@ -17,6 +17,12 @@ MKV_AUTO_GUILD_ID = 723093146954760222
 # Discord bot upload limit without nitro / boosts (bytes)
 DEFAULT_UPLOAD_LIMIT = 25 * 1024 * 1024
 CONVERT_TIMEOUT_SECONDS = 600
+# libx264 re-encodes are CPU heavy; convert one file at a time
+_convert_slots = asyncio.Semaphore(1)
+# Force the Matroska demuxer and local-file-only I/O so a crafted upload
+# (e.g. a playlist disguised as .mkv) can't make ffmpeg open other files/URLs
+_INPUT_ARGS = ["-protocol_whitelist", "file", "-f", "matroska"]
+_MAP_ARGS = ["-map", "0:v:0", "-map", "0:a?", "-sn", "-dn"]
 
 
 def _is_mkv_attachment(att: discord.Attachment) -> bool:
@@ -28,16 +34,12 @@ def _is_mkv_attachment(att: discord.Attachment) -> bool:
 
 
 def _upload_limit_for(guild: Optional[discord.Guild]) -> int:
+    override = os.getenv("MKV_UPLOAD_LIMIT_BYTES")
+    if override and override.isdigit():
+        return int(override)
     if guild is None:
         return DEFAULT_UPLOAD_LIMIT
-    # discord.py FileSizeLimit / premium_tier boosts upload size
-    limits = {
-        0: 25 * 1024 * 1024,
-        1: 25 * 1024 * 1024,
-        2: 50 * 1024 * 1024,
-        3: 100 * 1024 * 1024,
-    }
-    return limits.get(int(getattr(guild, "premium_tier", 0) or 0), DEFAULT_UPLOAD_LIMIT)
+    return int(getattr(guild, "filesize_limit", 0) or DEFAULT_UPLOAD_LIMIT)
 
 
 @lru_cache(maxsize=1)
@@ -67,9 +69,12 @@ async def _run_ffmpeg(args: list[str]) -> tuple[int, str]:
             proc.communicate(), timeout=CONVERT_TIMEOUT_SECONDS
         )
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.communicate()
         return -1, "ffmpeg timed out"
+    finally:
+        # Also covers task cancellation (e.g. cog unload) so ffmpeg never lingers
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
     err = (stderr or b"").decode("utf-8", errors="replace")[-2000:]
     return proc.returncode or 0, err
 
@@ -84,8 +89,10 @@ async def convert_mkv_to_mp4(src_path: str, dst_path: str) -> None:
         "-hide_banner",
         "-loglevel",
         "error",
+        *_INPUT_ARGS,
         "-i",
         src_path,
+        *_MAP_ARGS,
         "-c",
         "copy",
         "-movflags",
@@ -102,8 +109,10 @@ async def convert_mkv_to_mp4(src_path: str, dst_path: str) -> None:
         "-hide_banner",
         "-loglevel",
         "error",
+        *_INPUT_ARGS,
         "-i",
         src_path,
+        *_MAP_ARGS,
         "-c:v",
         "libx264",
         "-preset",
@@ -175,7 +184,8 @@ class MkvConvert(commands.Cog):
 
         try:
             await att.save(src_path)
-            await convert_mkv_to_mp4(src_path, dst_path)
+            async with _convert_slots:
+                await convert_mkv_to_mp4(src_path, dst_path)
 
             out_size = os.path.getsize(dst_path)
             if out_size > limit:
@@ -197,9 +207,12 @@ class MkvConvert(commands.Cog):
                 await status.delete()
             except Exception:
                 pass
+        except discord.HTTPException as error:
+            print(f"[mkv-convert] Upload failed for {att.filename}: {error}")
+            await self._fail(status, "Couldn't upload the MP4 (it may be over this server's upload limit).")
         except Exception as error:
             print(f"[mkv-convert] Failed on {att.filename}: {error}")
-            await self._fail(status, f"Conversion failed: {error}")
+            await self._fail(status, "Conversion failed. The file may be damaged or not a real MKV.")
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 

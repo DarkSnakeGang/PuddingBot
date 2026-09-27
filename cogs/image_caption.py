@@ -14,6 +14,11 @@ FONT_PATH = os.path.join(
 
 # Discord bot uploads are typically capped at 8 MiB without boosts
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
+# Decoding limits: one frame, and all frames of an animation combined (RGBA = 4 B/px)
+MAX_FRAME_PIXELS = 40_000_000
+MAX_ANIMATION_PIXELS = 40_000_000
+MAX_FRAMES = 1000
+Image.MAX_IMAGE_PIXELS = MAX_FRAME_PIXELS
 
 
 def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -124,14 +129,20 @@ def _frame_duration_ms(frame: Image.Image) -> int:
     return duration if duration > 0 else 40
 
 
-def _extract_animated_frames(img: Image.Image) -> Tuple[List[Image.Image], List[int]]:
-    """Return full RGBA frames + durations. Pillow seek() already applies GIF disposal."""
+def _extract_animated_frames(
+    img: Image.Image, scale: float = 1.0
+) -> Tuple[List[Image.Image], List[int]]:
+    """Return RGBA frames (optionally downscaled) + durations. seek() applies GIF disposal."""
     frames: List[Image.Image] = []
     durations: List[int] = []
     n_frames = getattr(img, "n_frames", 1) or 1
+    size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
     for index in range(n_frames):
         img.seek(index)
-        frames.append(img.convert("RGBA"))
+        frame = img.convert("RGBA")
+        if scale < 0.999:
+            frame = frame.resize(size, Image.Resampling.BOX)
+        frames.append(frame)
         durations.append(_frame_duration_ms(img))
     img.seek(0)
     return frames, durations
@@ -387,10 +398,21 @@ def caption_image(image_bytes: bytes, caption: str) -> Tuple[bytes, str]:
     if not (caption or "").strip():
         raise ValueError("Caption text is empty")
 
-    with Image.open(io.BytesIO(image_bytes)) as img:
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+    except Image.DecompressionBombError:
+        raise ValueError("That image is too large to caption.") from None
+    with img:
+        if img.width * img.height > MAX_FRAME_PIXELS:
+            raise ValueError("That image is too large to caption.")
         if _is_animated(img):
-            source_palette = _collect_gif_palette(img)
-            raw_frames, durations = _extract_animated_frames(img)
+            n_frames = getattr(img, "n_frames", 1) or 1
+            if n_frames > MAX_FRAMES:
+                raise ValueError("That GIF has too many frames to caption.")
+            total_pixels = img.width * img.height * n_frames
+            scale = min(1.0, (MAX_ANIMATION_PIXELS / total_pixels) ** 0.5)
+            source_palette = _collect_gif_palette(img) if scale >= 0.999 else None
+            raw_frames, durations = _extract_animated_frames(img, scale)
             loop = int(img.info.get("loop", 0) or 0)
             bar = _build_caption_bar(raw_frames[0].width, caption)
 

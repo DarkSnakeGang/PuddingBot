@@ -8,14 +8,19 @@ import re
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+import net_safety
+
 from .image_caption import caption_image
 
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+MAX_PAGE_BYTES = 2 * 1024 * 1024
+MAX_CAPTION_CHARS = 400
+# Captioning is CPU/RAM heavy; don't let a burst of requests run in parallel
+_caption_slots = asyncio.Semaphore(2)
 HISTORY_LIMIT = 50
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 
@@ -30,6 +35,10 @@ def _prefer_original_media_url(url: str) -> str:
     return url.replace("://media.discordapp.net/", "://cdn.discordapp.com/")
 
 
+def _host_is(host: str, domain: str) -> bool:
+    return host == domain or host.endswith("." + domain)
+
+
 def _looks_like_image_url(url: str) -> bool:
     if not url:
         return False
@@ -39,12 +48,11 @@ def _looks_like_image_url(url: str) -> bool:
         return False
     if any(path.endswith(ext) for ext in IMAGE_EXTS):
         return True
-    host = urlparse(url).hostname or ""
-    if host.endswith("discordapp.com") or host.endswith("discordapp.net"):
-        return True
-    if "tenor.com" in host or "giphy.com" in host:
-        return True
-    return False
+    host = (urlparse(url).hostname or "").lower()
+    return any(
+        _host_is(host, domain)
+        for domain in ("discordapp.com", "discordapp.net", "tenor.com", "giphy.com")
+    )
 
 
 def _media_from_attachment(att: discord.Attachment) -> Optional[Dict]:
@@ -112,7 +120,7 @@ async def resolve_direct_media_url(url: str) -> str:
     path = parsed.path
 
     # Tenor CDN mp4/webp → gif
-    if "tenor.com" in host and host.startswith("media"):
+    if _host_is(host, "tenor.com") and host.startswith("media"):
         lower_path = path.lower()
         for ext in (".mp4", ".webm", ".webp"):
             if lower_path.endswith(ext):
@@ -120,22 +128,22 @@ async def resolve_direct_media_url(url: str) -> str:
         return url
 
     # Giphy page → i.giphy.com/<id>.gif
-    if "giphy.com" in host and "/gifs/" in path:
+    if _host_is(host, "giphy.com") and "/gifs/" in path:
         slug = path.rstrip("/").split("/")[-1]
         gif_id = slug.split("-")[-1] if slug else ""
         if gif_id:
             return f"https://i.giphy.com/{gif_id}.gif"
 
-    if "tenor.com" not in host:
+    if not _host_is(host, "tenor.com"):
         return url
     if "/view/" not in path:
         return url
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status != 200:
-                    return url
-                html = await resp.text()
+        async with net_safety.public_session() as session:
+            _final, _ct, body = await net_safety.fetch_bytes_async(
+                session, url, max_bytes=MAX_PAGE_BYTES, timeout=15, truncate=True
+            )
+        html = body.decode("utf-8", errors="replace")
         match = re.search(r"https://media\.tenor\.com/[^\s\"']+\.gif", html)
         if match:
             return match.group(0)
@@ -146,17 +154,18 @@ async def resolve_direct_media_url(url: str) -> str:
 
 async def _http_get_bytes(url: str) -> bytes:
     headers = {"User-Agent": "PuddingBot/1.0"}
-    async with aiohttp.ClientSession(headers=headers) as session:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            if resp.status != 200:
-                raise ValueError(f"Failed to download image (HTTP {resp.status})")
-            cl = resp.headers.get("Content-Length")
-            if cl and int(cl) > MAX_DOWNLOAD_BYTES:
-                raise ValueError("Image is too large to download")
-            data = await resp.read()
-            if len(data) > MAX_DOWNLOAD_BYTES:
-                raise ValueError("Image is too large to download")
-            return data
+    try:
+        async with net_safety.public_session(headers=headers) as session:
+            _final, _ct, data = await net_safety.fetch_bytes_async(
+                session, url, max_bytes=MAX_DOWNLOAD_BYTES, timeout=30
+            )
+    except net_safety.TooLarge:
+        raise ValueError("Image is too large to download") from None
+    except net_safety.UnsafeURL:
+        raise
+    except Exception as error:
+        raise ValueError("Failed to download that image.") from error
+    return data
 
 
 async def download_image(url: str) -> bytes:
@@ -205,7 +214,7 @@ class ImageTools(commands.Cog):
             url = media.get("url") or ""
             if not url:
                 continue
-            if _looks_like_image_url(url) or "tenor.com" in url or "giphy.com" in url:
+            if _looks_like_image_url(url):
                 chosen = media
                 break
         if not chosen and media_list:
@@ -289,7 +298,7 @@ class ImageTools(commands.Cog):
     async def caption_command(
         self,
         interaction: discord.Interaction,
-        text: str,
+        text: app_commands.Range[str, 1, MAX_CAPTION_CHARS],
         image: Optional[discord.Attachment] = None,
         link: Optional[str] = None,
         spoiler: Optional[bool] = False,
@@ -312,7 +321,8 @@ class ImageTools(commands.Cog):
 
         try:
             raw = await download_image(media["url"])
-            out_bytes, ext = await asyncio.to_thread(caption_image, raw, text.strip())
+            async with _caption_slots:
+                out_bytes, ext = await asyncio.to_thread(caption_image, raw, text.strip())
         except ValueError as e:
             await interaction.followup.send(str(e), ephemeral=True)
             return
@@ -329,8 +339,9 @@ class ImageTools(commands.Cog):
         try:
             msg = await interaction.followup.send(file=file, wait=True)
         except discord.HTTPException as e:
+            print(f"Caption upload failed: {e}")
             await interaction.followup.send(
-                f"Couldn't upload the captioned image/GIF: {e}",
+                "Couldn't upload the captioned image/GIF (it may be over the upload limit).",
                 ephemeral=True,
             )
             return
