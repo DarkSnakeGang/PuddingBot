@@ -272,34 +272,34 @@ def clear_context():
         - /record - Get world records for specific game settings (game mode including CE RemixMod levels, apple amount including Tally, speed, size, run mode, optional date)
         - /leaderboards - Full WR table for a chosen apple count, speed, and size (optional date; ce_display Off/Mix/Only, default Off)
         - /available-dates - List available historical dates for viewing past records
-        - /player - Player profile (name, optional date; includes Chronicle empire arc), or explorer holds with holds=all|present|old|latest|mastery + optional tied + category filters + ce_display (Timed = non-HS; Mastery also supports High score modes only / Excluding Peaceful)
-        - /career - Career WR-days leaderboard (all / untied / tied; optional player_name search + country; shows best standing)
-        - /country - Country WR-days leaderboard (all / untied / tied; search / country filter)
+        - /player - Player profile (name, optional date; WR count/%, career, peaks, longevity, improving and mastery all follow ce_display, default Off = CE excluded; Chronicle empire arc only with Mix), or explorer holds with holds=all|present|old|latest|mastery + optional tied + category filters + ce_display (Timed = non-HS; Mastery also supports High score modes only / Excluding Peaceful)
+        - /career - Career WR-days leaderboard (all / untied / tied; optional player_name search + ce_display + country; shows best standing)
+        - /country - Country WR-days leaderboard (all / untied / tied; search / country filter; ce_display)
         - /mastery - Mastery Challenge All Apples leaderboard (optional player + category filters + ce_display + country; High score modes only / Excluding Peaceful)
-        - /chronicle - Chronicle history: Era newspaper, Empire arcs, Board wars, Setting debuts
+        - /chronicle - Chronicle history: Era newspaper, Empire arcs, Board wars, Setting debuts (ce_display for wars/debuts)
         - /stats - Rankings with Overall% and Relative% (optional date + category/CE/country filters)
-        - /report - Weekly report of new and changed world records
-        - /monthly - Monthly oldest-records update (optional YYYY-MM with complete FastSnakeStats months)
+        - /report - Weekly report of new and changed world records (ce_display)
+        - /monthly - Monthly oldest-records update (optional YYYY-MM with complete FastSnakeStats months; ce_display)
         - /random - Random valid challenge settings (optional tier + category filters + ce_display; shows current WR)
         - /progression - WR change timeline for a category (attaches chart PNG when enough points)
         - /longevity - Longest-held WRs (standing/all-time; optional tied + category/CE/country filters; High score modes only; Timed = non-HS)
-        - /improving - Players gaining the most WRs over 7d/30d/90d/365d (optional country)
+        - /improving - Players gaining the most WRs over 7d/30d/90d/365d (optional ce_display + country)
         - /contested - Categories with the most WR flips (optional category/CE/country filters; High score modes only; Timed = non-HS)
         - /popularity - Most unique historical holders (optional Both/Untied/Tied + category/CE/country filters; High score modes only; Timed = non-HS)
         - /stale - Least-flipped / longest-unchanged held categories (optional category/CE/country filters; High score modes only; Timed = non-HS)
         - /unicorns - Lottery-tier unicorn holds (optional category/CE/country filters)
         - /legends - Mythic/Lottery holds (show=All|Legends|Unicorns; optional category/CE/country filters; High score modes only)
         - /unheld - Never-held categories, easiest first (optional difficulty tier + category/CE filters; High score modes only; Timed = non-HS)
-        - /activity - Yearly flips or new-WR activity with calendar heatmap PNG
+        - /activity - Yearly flips or new-WR activity with calendar heatmap PNG (ce_display)
         - /about - FastSnakeStats credits, last updated, and community links
         - /watch - Watch a category and get pinged when its WR changes (add / list / remove / clear)
-        - /compare - Compare two players' WR holds (optional date)
+        - /compare - Compare two players' WR holds (optional date + ce_display)
         - /help - List PuddingBot slash commands
         - /caption - Add an ESMBot-style caption bar to an image or GIF (text; optional attachment/link)
         - Select Image - Right-click a message → Apps → Select Image, then /caption uses it
         - /wallall - Solve a small-board Wall All Ham Cycle or Ham Path. Paste pudding copy (`pattern 12…`) or a 90-cell 0/1 or 1/2 grid
 
-        I can help users look up world records, player statistics, historical data, Chronicle narratives, and statistics-explorer analytics from the FastSnakeStats database. Commands that take a date support optional historical date parameters to view past snapshots. Most list/board commands accept ce_display (Off/Mix/Only, default Off) to hide or show Category Extensions RemixMod modes, and many accept a country filter.
+        I can help users look up world records, player statistics, historical data, Chronicle narratives, and statistics-explorer analytics from the FastSnakeStats database. Commands that take a date support optional historical date parameters to view past snapshots. Every stats command accepts ce_display (Off/Mix/Only, default Off): Off excludes Category Extensions RemixMod level modes (Chess, Candy, Burger, Cat, Mexico, Bomb, Temp Wall, Ghost) from all counts, Only shows just those, Mix combines both. Many commands also accept a country filter.
         If someone asks for the website / site / link to see how many world records (WRs) a player has, or where to check WR counts, answer with https://stats.googlesnakemods.com/ (FastSnakeStats).
         If someone asks how many records / WRs a named player has (e.g. "how many records does SpaceDoge have?"), that is handled as a /player lookup — do not invent a count.
         I can also caption images and GIFs like esmBot: use /caption, or right-click a message and choose Select Image first.
