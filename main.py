@@ -173,7 +173,7 @@ async def send_message(message: Message, user_message: str, user="Nobody") -> No
 async def _send_player_records_lookup(message: Message, target, queried_player: str) -> None:
     """Resolve a natural-language player WR count question to the /player embed."""
     from github_cache_fetcher import github_cache_fetcher
-    from cogs.fastsnakestats import PlayerPaginationView
+    from cogs.fastsnakestats import ListPaginationView
 
     cog = bot.get_cog("FastSnakeStats")
     if cog is None:
@@ -203,12 +203,12 @@ async def _send_player_records_lookup(message: Message, target, queried_player: 
     activity_len = len(player_data.get("recent_activity") or [])
     total_pages = max(1, (activity_len + 4) // 5)
     if total_pages > 1:
-        view = PlayerPaginationView(
-            player_data,
+        view = ListPaginationView(
             message.author.id,
-            embed_factory=cog.create_player_embed,
+            total_pages,
+            lambda page: cog.create_player_embed(player_data, page),
         )
-        await target.send(embed=embed, view=view)
+        view.message = await target.send(embed=embed, view=view)
     else:
         await target.send(embed=embed)
 
