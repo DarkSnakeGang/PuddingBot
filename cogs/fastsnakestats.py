@@ -93,6 +93,7 @@ class FastSnakeStats(commands.Cog):
             
             return {
                 'run': best_run,
+                'runs': runs,
                 'settings': settings_key,
                 'total_runs': len(runs),
                 'date': date or await github_cache_fetcher.get_most_recent_date()
@@ -134,16 +135,18 @@ class FastSnakeStats(commands.Cog):
         )
 
     async def _get_improving_rows(
-        self, window: str, ce_display: Optional[str]
+        self, window: str, ce_display: Optional[str], uncapped: bool = False
     ) -> Optional[List[Dict]]:
+        """Improving players; `uncapped` rebuilds past the explorer's top 25 (for filtering)."""
         ce = ce_aggregates.normalize_ce(ce_display)
-        if ce == "Mix":
+        if ce == "Mix" and not uncapped:
             return await github_cache_fetcher.get_improving(window)
         holds = await self._ce_filtered_holds(ce)
         _, latest = await self._explorer_date_range()
         if holds is None or not latest:
             return None
-        return ce_aggregates.build_improving(holds, latest).get(window) or []
+        limit = None if uncapped else 25
+        return ce_aggregates.build_improving(holds, latest, limit=limit).get(window) or []
 
     async def _get_activity_entries(self, ce_display: Optional[str]) -> Optional[List[Dict]]:
         ce = ce_aggregates.normalize_ce(ce_display)
@@ -1218,16 +1221,19 @@ class FastSnakeStats(commands.Cog):
             timestamp=datetime.now()
         )
         
-        # Add fields
+        holders = list(dict.fromkeys(
+            dm.get_player_name(r) for r in record_data.get('runs') or [run]
+        ))
         embed.add_field(
-            name="Player",
-            value=dm.get_player_name(run),
+            name="Player" if len(holders) <= 1 else f"Players (tied ×{len(holders)})",
+            value=", ".join(holders) or dm.get_player_name(run),
             inline=True
         )
-        
+
+        run_mode = settings_key.split('|')[4] if settings_key.count('|') >= 4 else ''
         embed.add_field(
-            name="Time",
-            value=dm.get_run_time(run),
+            name="Score" if run_mode == "High Score" else "Time",
+            value=self._format_time_for_display(dm.get_run_time(run), run_mode),
             inline=True
         )
         
@@ -2089,14 +2095,12 @@ class FastSnakeStats(commands.Cog):
         for code in names:
             if code.lower() == lower:
                 return code
-        # Exact / partial name
         for code, name in names.items():
             if (name or "").lower() == lower:
                 return code
-        for code, name in names.items():
-            if lower in (name or "").lower():
-                return code
-        return raw.lower()
+        # Partial name only when it's unambiguous ("united" matches several)
+        partial = [code for code, name in names.items() if lower in (name or "").lower()]
+        return partial[0] if len(partial) == 1 else None
 
     async def _filter_rows_by_country(
         self, items: List[Dict], country: Optional[str]
@@ -2269,6 +2273,7 @@ class FastSnakeStats(commands.Cog):
         if not latest:
             latest = datetime.now().strftime('%Y-%m-%d')
         ce = ce_display if ce_display is not None else CE_DISPLAY_DEFAULT
+        present_holders = await self._present_holder_counts()
 
         contested: List[Dict] = []
         popularity: List[Dict] = []
@@ -2298,7 +2303,7 @@ class FastSnakeStats(commands.Cog):
                 'category': category,
                 'flips': flip_count,
                 'uniqueHolders': len(holders),
-                'tiedHolders': 1,
+                'tiedHolders': present_holders.get(category, 0),
                 'daysWithRecord': days_with_record,
                 'holdStart': last,
                 'holdDays': hold_days,
@@ -2350,6 +2355,18 @@ class FastSnakeStats(commands.Cog):
         items = await self._filter_rows_by_country(items, country)
         return items[:limit]
 
+    async def _present_holder_counts(self) -> Dict[str, int]:
+        """category -> number of players holding the present WR (0 = unheld)."""
+        world_records = await github_cache_fetcher.fetch_current_world_records() or {}
+        return {
+            category: len({
+                key
+                for run in runs or []
+                for key in (dm.get_player_ids(run) or [dm.get_player_name(run)])
+            })
+            for category, runs in world_records.items()
+        }
+
     async def _get_popularity_items(
         self,
         tied: Optional[str] = None,
@@ -2377,6 +2394,10 @@ class FastSnakeStats(commands.Cog):
             if items is None:
                 return None
             items = self._filter_category_rows(items, **filters)
+        if tied and tied != "all":
+            # Explorer rows carry tiedHolders=0, so count present WR holders here
+            counts = await self._present_holder_counts()
+            items = [dict(item, tiedHolders=counts.get(item.get("category"), 0)) for item in items]
         items = self._filter_popularity_tied(items, tied)
         items = await self._filter_rows_by_country(items, country)
         return items[:limit]
@@ -3993,11 +4014,11 @@ class FastSnakeStats(commands.Cog):
         try:
             window_key = window.value if window else "30d"
             ce = ce_display.value if ce_display else CE_DISPLAY_DEFAULT
-            items = await self._get_improving_rows(window_key, ce)
+            items = await self._get_improving_rows(window_key, ce, uncapped=bool(country))
             if items is None:
                 await interaction.followup.send("❌ Improving-player data unavailable.")
                 return
-            items = await self._filter_rows_by_country(items or [], country)
+            items = (await self._filter_rows_by_country(items or [], country))[:50]
             if not items:
                 await interaction.followup.send(f"❌ No improving players for window `{window_key}`.")
                 return

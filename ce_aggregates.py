@@ -204,7 +204,7 @@ IMPROVING_WINDOWS = (("7d", 7), ("30d", 30), ("90d", 90), ("365d", 365))
 
 
 def build_improving(
-    holds: Iterable[Dict], latest: str, limit: int = 25
+    holds: Iterable[Dict], latest: str, limit: Optional[int] = 25
 ) -> Dict[str, List[Dict]]:
     """Same shape as explorer `improving` (WR count gain per window)."""
     holds = list(holds or [])
@@ -261,8 +261,9 @@ def player_improving(
 
 
 def _matches_player(h: Dict, player_id: Optional[str], player_name: Optional[str]) -> bool:
-    if player_id and h.get("playerId") == player_id:
-        return True
+    # With a known id, never merge in same-named players or guests
+    if player_id:
+        return h.get("playerId") == player_id
     name = (player_name or "").lower().strip()
     return bool(name) and (h.get("playerName") or "").lower() == name
 
