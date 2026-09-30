@@ -31,17 +31,7 @@ TOKEN: Final[Optional[str]] = _env('DISCORD_TOKEN')
 GUILD_ID: Final[Optional[str]] = _env('DISCORD_GUILD_ID')
 POI_CHANNEL_NAME: Final[str] = _env('POI_CHANNEL_NAME', 'poi-🐡') or 'poi-🐡'
 POI_CHANNEL_ID: Final[Optional[str]] = _env('POI_CHANNEL_ID', '1284209751952986223')
-SIXTY_SEVEN_ASSET: Final[str] = next(
-    (
-        path
-        for path in (
-            os.path.join(os.path.dirname(__file__), 'assets', f'sixty_seven.{ext}')
-            for ext in ('gif', 'png')
-        )
-        if os.path.isfile(path)
-    ),
-    '',
-)
+SIXTY_SEVEN_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'sixty_seven.gif')
 END_CAREER_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'end_career.png')
 WALL_ALL_TRIGGERS: Final[tuple] = (
     'wall all mainboard',
@@ -282,10 +272,9 @@ async def on_message(message: Message) -> None:
         asyncio.create_task(_delete_one_quietly(message))
 
     # 1/67 easter egg when someone actually writes 67
-    if mentions_67(user_message) and random.randint(1, 67) == 1 and SIXTY_SEVEN_ASSET:
+    if mentions_67(user_message) and random.randint(1, 67) == 1 and os.path.isfile(SIXTY_SEVEN_ASSET):
         try:
-            filename = "67" + os.path.splitext(SIXTY_SEVEN_ASSET)[1]
-            await message.channel.send(file=File(SIXTY_SEVEN_ASSET, filename=filename))
+            await message.channel.send(file=File(SIXTY_SEVEN_ASSET, filename="67.gif"))
         except Exception as e:
             print(f"Failed to send 67 meme: {e}")
 
