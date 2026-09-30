@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 import discord
 from discord import Intents, Message, Object, NotFound, Forbidden, HTTPException, File
 from discord.ext import commands
-from chat import get_response, is_allowed_poi_message, parse_how_many_records_player
+from chat import get_response, is_allowed_poi_message, mentions_67, parse_how_many_records_player, visible_text
 import data_management as dm
 import asyncio
 import wall
@@ -31,7 +31,17 @@ TOKEN: Final[Optional[str]] = _env('DISCORD_TOKEN')
 GUILD_ID: Final[Optional[str]] = _env('DISCORD_GUILD_ID')
 POI_CHANNEL_NAME: Final[str] = _env('POI_CHANNEL_NAME', 'poi-🐡') or 'poi-🐡'
 POI_CHANNEL_ID: Final[Optional[str]] = _env('POI_CHANNEL_ID', '1284209751952986223')
-SIXTY_SEVEN_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'sixty_seven.png')
+SIXTY_SEVEN_ASSET: Final[str] = next(
+    (
+        path
+        for path in (
+            os.path.join(os.path.dirname(__file__), 'assets', f'sixty_seven.{ext}')
+            for ext in ('gif', 'png')
+        )
+        if os.path.isfile(path)
+    ),
+    '',
+)
 END_CAREER_ASSET: Final[str] = os.path.join(os.path.dirname(__file__), 'assets', 'end_career.png')
 WALL_ALL_TRIGGERS: Final[tuple] = (
     'wall all mainboard',
@@ -271,15 +281,16 @@ async def on_message(message: Message) -> None:
         # Full-history sweep runs once at startup; live messages are checked one by one
         asyncio.create_task(_delete_one_quietly(message))
 
-    # 1/67 easter egg when a message contains "67"
-    if "67" in user_message and random.randint(1, 67) == 1 and os.path.isfile(SIXTY_SEVEN_ASSET):
+    # 1/67 easter egg when someone actually writes 67
+    if mentions_67(user_message) and random.randint(1, 67) == 1 and SIXTY_SEVEN_ASSET:
         try:
-            await message.channel.send(file=File(SIXTY_SEVEN_ASSET, filename="67.png"))
+            filename = "67" + os.path.splitext(SIXTY_SEVEN_ASSET)[1]
+            await message.channel.send(file=File(SIXTY_SEVEN_ASSET, filename=filename))
         except Exception as e:
             print(f"Failed to send 67 meme: {e}")
 
     # 1/16 easter egg for wall-all category mentions
-    lowered_message = user_message.lower()
+    lowered_message = visible_text(user_message).lower()
     if (
         any(trigger in lowered_message for trigger in WALL_ALL_TRIGGERS)
         and random.randint(1, 16) == 1

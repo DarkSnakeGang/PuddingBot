@@ -15,6 +15,19 @@ _POI_ONLY_RE = re.compile(rf"^<a?:poi:{re.escape(POI_EMOJI_ID)}>$")
 
 FASTSNAKESTATS_URL = "https://stats.googlesnakemods.com/"
 
+# <@id> <@!id> <@&id> <#id> <:emoji:id> <a:emoji:id> <t:unix:R> and links
+_DISCORD_TOKEN_RE = re.compile(r"<(?:@[!&]?|#|a?:\w+:|t:)[^<>\s]*>|https?://\S+", re.IGNORECASE)
+_STANDALONE_67_RE = re.compile(r"(?<![\d.,])67(?![\d.,]\d)")
+
+
+def visible_text(content: str) -> str:
+    """Message text as people read it: no mention/channel/emoji IDs or URLs."""
+    return _DISCORD_TOKEN_RE.sub(" ", content or "")
+
+
+def mentions_67(content: str) -> bool:
+    return bool(_STANDALONE_67_RE.search(visible_text(content)))
+
 
 def wants_fastsnakestats_link(text: str) -> bool:
     """True for questions like 'what's the website to see how many records I have?'."""
