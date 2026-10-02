@@ -19,6 +19,9 @@ MAX_FRAME_PIXELS = 40_000_000
 MAX_ANIMATION_PIXELS = 40_000_000
 MAX_FRAMES = 1000
 Image.MAX_IMAGE_PIXELS = MAX_FRAME_PIXELS
+# Antialiased caption text in GIFs uses these grays (always kept in the palette)
+GRAY_STEP = 17
+GRAY_RAMP = tuple((v, v, v) for v in range(0, 256, GRAY_STEP))
 
 
 def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -28,11 +31,6 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         except OSError:
             pass
     return ImageFont.load_default()
-
-
-def _text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> Tuple[int, int]:
-    bbox = draw.textbbox((0, 0), text, font=font)
-    return bbox[2] - bbox[0], bbox[3] - bbox[1]
 
 
 def _wrap_lines(
@@ -51,8 +49,7 @@ def _wrap_lines(
         current = words[0]
         for word in words[1:]:
             trial = f"{current} {word}"
-            w, _ = _text_size(draw, trial, font)
-            if w <= max_width:
+            if draw.textlength(trial, font=font) <= max_width:
                 current = trial
             else:
                 lines.append(current)
@@ -62,33 +59,38 @@ def _wrap_lines(
 
 
 def _build_caption_bar(width: int, caption: str) -> Image.Image:
-    """White caption strip matching esmBot layout (font ~width/10, pad ~width/25)."""
+    """White caption strip laid out like esmBot's libvips/Pango text.
+
+    Font size width/10, wrap width width - 2*(width/25), line pitch ascent+descent,
+    centred lines; the bar is the tight text ink height plus one font size.
+    """
     width = max(1, width)
     size = max(12, width // 10)
     text_width = max(1, width - ((width // 25) * 2))
     font = _load_font(size)
+    try:
+        ascent, descent = font.getmetrics()
+    except AttributeError:
+        ascent, descent = size, size // 4
+    pitch = max(1, ascent + descent)
 
-    # Probe wrap with a throwaway image
-    probe = Image.new("RGB", (width, size), "white")
-    draw = ImageDraw.Draw(probe)
-    lines = _wrap_lines(draw, f" {caption} ", font, text_width)
-    line_heights = []
-    total_text_h = 0
-    for line in lines:
-        _, h = _text_size(draw, line if line else " ", font)
-        line_heights.append(h)
-        total_text_h += h
-    # Extra vertical room like esmBot: text.height() + size
-    bar_height = max(size * 2, total_text_h + size)
+    measure = ImageDraw.Draw(Image.new("L", (1, 1)))
+    lines = _wrap_lines(measure, caption, font, text_width)
+    mask = Image.new("L", (width, pitch * len(lines) + size), 0)
+    draw = ImageDraw.Draw(mask)
+    for index, line in enumerate(lines):
+        x = (width - draw.textlength(line, font=font)) / 2
+        draw.text((x, index * pitch), line, font=font, fill=255)
 
+    ink = mask.getbbox() or (0, 0, width, pitch)
+    ink_height = ink[3] - ink[1]
+    bar_height = ink_height + size
     bar = Image.new("RGBA", (width, bar_height), (255, 255, 255, 255))
-    draw = ImageDraw.Draw(bar)
-    y = (bar_height - total_text_h) // 2
-    for line, h in zip(lines, line_heights):
-        w, _ = _text_size(draw, line if line else " ", font)
-        x = (width - w) // 2
-        draw.text((x, y), line, font=font, fill=(0, 0, 0, 255))
-        y += h
+    bar.paste(
+        Image.new("RGBA", (width, ink_height), (0, 0, 0, 255)),
+        (0, (bar_height - ink_height) // 2),
+        mask.crop((0, ink[1], width, ink[3])),
+    )
     return bar
 
 
@@ -166,7 +168,7 @@ def _palette_image(colors: List[Tuple[int, int, int]]) -> Image.Image:
 
 
 def _palette_with_black_white(used_colors: List[Tuple[int, int, int]]) -> Image.Image:
-    """Keep every used color; append black/white if there is room, else steal nearest."""
+    """Keep every used color; add the caption gray ramp, stealing the nearest slots if full."""
     colors: List[Tuple[int, int, int]] = []
     seen = set()
     for color in used_colors:
@@ -185,7 +187,7 @@ def _palette_with_black_white(used_colors: List[Tuple[int, int, int]]) -> Image.
         best_i = 0
         best_d = 10**9
         for i, color in enumerate(colors):
-            if color in ((0, 0, 0), (255, 255, 255)) and color != target:
+            if color in GRAY_RAMP:
                 continue
             dist = sum((color[j] - target[j]) ** 2 for j in range(3))
             if dist < best_d:
@@ -195,8 +197,8 @@ def _palette_with_black_white(used_colors: List[Tuple[int, int, int]]) -> Image.
         colors[best_i] = target
         seen.add(target)
 
-    add_or_replace((0, 0, 0))
-    add_or_replace((255, 255, 255))
+    for gray in GRAY_RAMP:
+        add_or_replace(gray)
     return _palette_image(colors)
 
 
@@ -285,9 +287,10 @@ def _adaptive_palette(frames: List[Image.Image]) -> Image.Image:
         sheet.paste(sample, (0, y))
         y += sample.height
     method = getattr(Image.Quantize, "MAXCOVERAGE", Image.Quantize.MEDIANCUT)
-    reduced = sheet.quantize(colors=254, method=method, dither=Image.Dither.NONE)
+    body_colors = 256 - len(GRAY_RAMP)
+    reduced = sheet.quantize(colors=body_colors, method=method, dither=Image.Dither.NONE)
     raw = list(reduced.getpalette() or [])
-    used = [tuple(raw[i : i + 3]) for i in range(0, min(len(raw), 762), 3)]
+    used = [tuple(raw[i : i + 3]) for i in range(0, min(len(raw), body_colors * 3), 3)]
     return _palette_with_black_white(used)
 
 
@@ -320,10 +323,11 @@ def _frame_palette(frame: Image.Image) -> Image.Image:
     return _adaptive_palette([frame])
 
 
-def _caption_bar_bw(bar: Image.Image) -> Image.Image:
-    """Drop antialiased gray text so caption colors don't steal GIF palette slots."""
+def _caption_bar_gray(bar: Image.Image) -> Image.Image:
+    """Snap antialiased caption text onto GRAY_RAMP so it maps exactly into the palette."""
     luma = bar.convert("L")
-    return luma.point(lambda px: 0 if px < 160 else 255, mode="L").convert("RGB")
+    step = GRAY_STEP
+    return luma.point(lambda px: min(255, round(px / step) * step), mode="L").convert("RGB")
 
 
 def _body_to_p(frame: Image.Image, palette_img: Image.Image) -> Image.Image:
@@ -366,13 +370,13 @@ def _save_gif(
 ) -> bytes:
     if not frames:
         raise ValueError("GIF has no frames")
-    bar_bw = _caption_bar_bw(caption_bar)
+    bar_gray = _caption_bar_gray(caption_bar)
     if palette_img is not None or force_global_palette:
         shared = _frames_palette(frames, palette_img)
-        paletted = [_stack_paletted(bar_bw, _body_to_p(frame, shared)) for frame in frames]
+        paletted = [_stack_paletted(bar_gray, _body_to_p(frame, shared)) for frame in frames]
     else:
         paletted = [
-            _stack_paletted(bar_bw, _body_to_p(frame, _frame_palette(frame)))
+            _stack_paletted(bar_gray, _body_to_p(frame, _frame_palette(frame)))
             for frame in frames
         ]
     buf = io.BytesIO()
