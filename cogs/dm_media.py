@@ -18,7 +18,7 @@ from PIL import Image
 
 import net_safety
 
-URL_RE = re.compile(r"https?://[^\s<>)\]]+", re.IGNORECASE)
+URL_RE = re.compile(r"https?://[^\s<>\]]+", re.IGNORECASE)
 
 MEDIA_EXTS = (
     ".webp",
@@ -37,6 +37,8 @@ MEDIA_EXTS = (
     ".mkv",
     ".apng",
 )
+
+VIDEO_EXTS = {".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv"}
 
 MEDIA_CONTENT_PREFIXES = (
     "image/",
@@ -65,6 +67,19 @@ FETCH_TIMEOUT = aiohttp.ClientTimeout(total=45)
 JOB_TIMEOUT_SECONDS = 120
 MAX_CONCURRENT_JOBS = 2
 FILES_PER_MESSAGE = 10
+# Page scrapes: distinct images to try, downloads in flight, and the icon cutoff
+MAX_FAMILIES_TRIED = MAX_MEDIA_ITEMS * 3
+FETCH_CONCURRENCY = 4
+MIN_IMAGE_SIDE = 100
+# Never media on a scraped page (SVGs there are logos/icons/flags)
+_SKIP_EXTS = {
+    ".css", ".js", ".mjs", ".json", ".map", ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".ico", ".svg", ".xml", ".txt", ".html", ".htm", ".php",
+}
+# Priority of where a URL was found: page preview image, then videos, then the rest
+RANK_META, RANK_VIDEO, RANK_OTHER = 0, 1, 2
+# Unknown-size images sort between small thumbnails and big hero images
+UNKNOWN_SIZE_HINT = 800
 
 # Query keys that usually mean a resized/thumbnail CDN variant
 _SIZE_QUERY_KEYS = {
@@ -93,12 +108,35 @@ _SIZE_SUFFIX_RE = re.compile(
 )
 
 
+# Resize suffix at the end of a filename stem: -300x200, _300x (Shopify), _x300, -800w
+_SIZE_IN_NAME_RE = re.compile(r"[-_](?:(\d{2,4})x(\d{2,4})?|x(\d{2,4})|(\d{2,4})w)$")
+# Wikimedia thumbnails: /wikipedia/<project>/thumb/a/ab/Name.jpg/250px-Name.jpg
+_WIKIMEDIA_THUMB_RE = re.compile(r"^(/wikipedia/[^/]+)/thumb/(.+?)/[^/]+$")
+
+
+def _canonical_location(netloc: str, path: str) -> Tuple[str, str]:
+    """Map known CDN thumbnail locations to the original file's host and path."""
+    match = _WIKIMEDIA_THUMB_RE.match(path)
+    if match and netloc.lower().endswith("wikimedia.org"):
+        return "upload.wikimedia.org", f"{match.group(1)}/{match.group(2)}"
+    return netloc, path
+
+
+def _keep_query_key(key: str) -> bool:
+    key = key.lower()
+    return key not in _SIZE_QUERY_KEYS and not key.startswith("utm_")
+
+
 def message_has_http_url(content: str) -> bool:
     return bool(URL_RE.search(content or ""))
 
 
 def _strip_url(raw: str) -> str:
-    return (raw or "").rstrip(".,;:!?)>]}\"'" )
+    """Drop trailing punctuation; keep ')' that closes a '(' inside the URL (wiki links)."""
+    url = (raw or "").rstrip(".,;:!?>]}\"'")
+    while url.endswith(")") and url.count(")") > url.count("("):
+        url = url[:-1].rstrip(".,;:!?>]}\"'")
+    return url
 
 
 def _ext_of(url: str) -> str:
@@ -152,7 +190,7 @@ def _media_family_key(url: str) -> str:
         parsed = urlparse(url)
     except ValueError:
         return url.lower()
-    path = parsed.path or ""
+    netloc, path = _canonical_location(parsed.netloc, parsed.path or "")
     path = _THUMB_PATH_RE.sub("/", path)
     root, ext = os.path.splitext(path)
     root = _SIZE_SUFFIX_RE.sub("", root)
@@ -160,22 +198,65 @@ def _media_family_key(url: str) -> str:
     query_pairs = [
         (k, v)
         for k, v in parse_qsl(parsed.query, keep_blank_values=True)
-        if k.lower() not in _SIZE_QUERY_KEYS
+        if _keep_query_key(k)
     ]
     query = urlencode(query_pairs)
     return urlunparse(
-        (parsed.scheme.lower(), parsed.netloc.lower(), path, "", query, "")
+        (parsed.scheme.lower(), netloc.lower(), path, "", query, "")
     )
 
 
-def _image_pixel_area(blob: bytes) -> Optional[int]:
+def _image_dims(blob: bytes) -> Optional[Tuple[int, int]]:
     try:
         with Image.open(io.BytesIO(blob)) as img:
-            width, height = img.size
-            return int(width) * int(height)
+            return int(img.width), int(img.height)
     except Exception:
         # Includes DecompressionBombError for absurd dimensions
         return None
+
+
+def _image_pixel_area(blob: bytes) -> Optional[int]:
+    dims = _image_dims(blob)
+    return dims[0] * dims[1] if dims else None
+
+
+def _size_hint(url: str) -> int:
+    """Largest pixel size a URL asks for (width=1500, -300x200.jpg, ...); 0 if none."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return 0
+    hints = [
+        int(value)
+        for key, value in parse_qsl(parsed.query)
+        if key.lower() in _SIZE_QUERY_KEYS and value.isdigit()
+    ]
+    match = _SIZE_IN_NAME_RE.search(os.path.splitext(parsed.path)[0])
+    if match:
+        hints.extend(int(group) for group in match.groups() if group)
+    match = re.search(r"/(\d{2,4})px-[^/]+$", parsed.path)
+    if match:
+        hints.append(int(match.group(1)))
+    return max(hints, default=0)
+
+
+def _full_size_url(url: str) -> str:
+    """Same asset without resize params / NxN filename suffix (CDNs then serve the original)."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return url
+    netloc, path = _canonical_location(parsed.netloc, parsed.path)
+    root, ext = os.path.splitext(path)
+    root = _SIZE_IN_NAME_RE.sub("", root) if ext else root
+    query = urlencode(
+        [
+            (k, v)
+            for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+            if _keep_query_key(k)
+        ]
+    )
+    return urlunparse(parsed._replace(netloc=netloc, path=root + ext, query=query))
 
 
 def prefer_full_over_thumbnails(
@@ -224,25 +305,33 @@ def prefer_full_over_thumbnails(
 class _MediaHTMLParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.urls: List[str] = []
+        # (raw url, srcset width descriptor or 0, RANK_*)
+        self.entries: List[Tuple[str, int, int]] = []
+
+    def _add(self, raw: str, width: int = 0, rank: int = RANK_OTHER) -> None:
+        if raw:
+            self.entries.append((raw, width, rank))
+
+    def _add_srcset(self, srcset: str) -> None:
+        for part in srcset.split(","):
+            bits = part.strip().split()
+            if not bits:
+                continue
+            descriptor = bits[1].lower() if len(bits) > 1 else ""
+            width = int(descriptor[:-1]) if descriptor.endswith("w") and descriptor[:-1].isdigit() else 0
+            self._add(bits[0], width)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
         attr = {k.lower(): (v or "") for k, v in attrs}
         tag = tag.lower()
         if tag == "img":
             for key in ("src", "data-src", "data-original", "data-lazy-src", "data-url"):
-                if attr.get(key):
-                    self.urls.append(attr[key])
-            srcset = attr.get("srcset") or attr.get("data-srcset")
-            if srcset:
-                for part in srcset.split(","):
-                    candidate = part.strip().split(" ")[0]
-                    if candidate:
-                        self.urls.append(candidate)
+                self._add(attr.get(key, ""))
+            self._add_srcset(attr.get("srcset") or attr.get("data-srcset") or "")
         elif tag in ("video", "source", "audio"):
             for key in ("src", "data-src"):
-                if attr.get(key):
-                    self.urls.append(attr[key])
+                self._add(attr.get(key, ""), rank=RANK_VIDEO if tag != "audio" else RANK_OTHER)
+            self._add_srcset(attr.get("srcset") or "")
         elif tag == "meta":
             prop = (attr.get("property") or attr.get("name") or "").lower()
             if prop in (
@@ -252,22 +341,23 @@ class _MediaHTMLParser(HTMLParser):
                 "og:video:url",
                 "twitter:image",
                 "twitter:image:src",
-            ) and attr.get("content"):
-                self.urls.append(attr["content"])
+            ):
+                self._add(attr.get("content", ""), rank=RANK_META)
         elif tag == "link":
             rel = (attr.get("rel") or "").lower()
             href = attr.get("href") or ""
             if href and any(r in rel for r in ("image", "thumbnail", "preload", "icon")):
-                self.urls.append(href)
+                self._add(href)
             elif href and _looks_like_media_url(href):
-                self.urls.append(href)
+                self._add(href)
         elif tag == "a":
             href = attr.get("href") or ""
             if href and _looks_like_media_url(href):
-                self.urls.append(href)
+                self._add(href)
 
 
-def extract_media_urls_from_html(base_url: str, html: str) -> List[str]:
+def _extract_media_entries(base_url: str, html: str) -> List[Tuple[str, int, int]]:
+    """Absolute candidate URLs in page order as (url, size hint, rank)."""
     parser = _MediaHTMLParser()
     try:
         parser.feed(html)
@@ -275,27 +365,24 @@ def extract_media_urls_from_html(base_url: str, html: str) -> List[str]:
     except Exception:
         pass
 
-    found: List[str] = []
-    seen: Set[str] = set()
+    found: Dict[str, Tuple[int, int]] = {}
 
-    def add(raw: str) -> None:
+    def add(raw: str, width: int, rank: int) -> None:
         if not raw or raw.startswith("data:"):
             return
-        absolute = urljoin(base_url, raw.strip())
-        absolute = _strip_url(absolute)
-        if absolute in seen:
-            return
+        absolute = _strip_url(urljoin(base_url, raw.strip()))
         if not absolute.lower().startswith(("http://", "https://")):
             return
         lower = absolute.lower()
         if any(skip in lower for skip in SKIP_HOST_FRAGMENTS):
             return
         # Keep parser hits (og:image may lack an extension); content-type filters later
-        seen.add(absolute)
-        found.append(absolute)
+        hint = max(width, _size_hint(absolute))
+        old = found.get(absolute)
+        found[absolute] = (max(hint, old[0]), min(rank, old[1])) if old else (hint, rank)
 
-    for raw in parser.urls:
-        add(raw)
+    for raw, width, rank in parser.entries:
+        add(raw, width, rank)
 
     # Also scrape any absolute media URLs embedded in the HTML text
     for match in re.finditer(
@@ -303,9 +390,39 @@ def extract_media_urls_from_html(base_url: str, html: str) -> List[str]:
         html,
         re.IGNORECASE,
     ):
-        add(match.group(0))
+        add(match.group(0), 0, RANK_VIDEO if _ext_of(match.group(0)) in VIDEO_EXTS else RANK_OTHER)
 
-    return found
+    return [(url, hint, rank) for url, (hint, rank) in found.items()]
+
+
+def extract_media_urls_from_html(base_url: str, html: str) -> List[str]:
+    return [url for url, _hint, _rank in _extract_media_entries(base_url, html)]
+
+
+def plan_media_fetches(base_url: str, html: str) -> List[List[str]]:
+    """One URL list per distinct asset, most important asset first.
+
+    Each list tries the full-size URL (resize params stripped) and then the
+    largest variants the page offered, in case the CDN rejects the bare URL.
+    """
+    families: Dict[str, Dict] = {}
+    for order, (url, hint, rank) in enumerate(_extract_media_entries(base_url, html)):
+        if _ext_of(url) in _SKIP_EXTS:
+            continue
+        family = families.setdefault(
+            _media_family_key(url), {"rank": rank, "order": order, "variants": []}
+        )
+        family["rank"] = min(family["rank"], rank)
+        family["variants"].append((hint, url))
+
+    ranked = []
+    for family in families.values():
+        variants = sorted(family["variants"], key=lambda v: -v[0])
+        attempts = list(dict.fromkeys([_full_size_url(variants[0][1])] + [u for _, u in variants]))
+        best = variants[0][0] or UNKNOWN_SIZE_HINT
+        ranked.append(((family["rank"], -best, family["order"]), attempts[:3]))
+    ranked.sort(key=lambda row: row[0])
+    return [attempts for _key, attempts in ranked]
 
 
 async def _fetch_bytes(
@@ -344,28 +461,36 @@ async def collect_media_from_url(
         return []
 
     html = data[:MAX_PAGE_BYTES].decode("utf-8", errors="replace")
-    # Fetch extra candidates so thumbnail+full pairs can be resolved later
-    candidates = (
-        await asyncio.to_thread(extract_media_urls_from_html, page_url, html)
-    )[: MAX_MEDIA_ITEMS * 3]
+    plans = (await asyncio.to_thread(plan_media_fetches, page_url, html))[:MAX_FAMILIES_TRIED]
+
+    async def fetch_best(attempts: List[str], limit: int) -> Optional[Tuple[str, bytes, str]]:
+        for media_url in attempts:
+            try:
+                media_bytes, media_ct = await _fetch_bytes(session, media_url, limit)
+            except Exception:
+                continue
+            ct = (media_ct or "").lower()
+            if ct.startswith("text/") or "svg" in ct or not _is_media_content_type(ct, media_url):
+                continue
+            if ct.startswith("image/"):
+                dims = await asyncio.to_thread(_image_dims, media_bytes)
+                if dims and max(dims) < MIN_IMAGE_SIDE:
+                    return None  # icon/sprite; the other variants are no bigger
+            return media_url, media_bytes, media_ct
+        return None
 
     results: List[Tuple[str, bytes, str]] = []
     job_bytes = len(data)
-    for media_url in candidates:
-        if len(results) >= MAX_MEDIA_ITEMS * 3 or job_bytes >= MAX_JOB_BYTES:
+    for start in range(0, len(plans), FETCH_CONCURRENCY):
+        remaining = MAX_JOB_BYTES - job_bytes
+        if len(results) >= MAX_MEDIA_ITEMS or remaining <= 0:
             break
-        try:
-            media_bytes, media_ct = await _fetch_bytes(
-                session, media_url, min(MAX_MEDIA_BYTES, MAX_JOB_BYTES - job_bytes)
-            )
-        except Exception:
-            continue
-        if not _is_media_content_type(media_ct, media_url):
-            continue
-        if media_ct.startswith("text/"):
-            continue
-        job_bytes += len(media_bytes)
-        results.append((media_url, media_bytes, media_ct))
+        chunk = plans[start : start + FETCH_CONCURRENCY]
+        limit = min(MAX_MEDIA_BYTES, remaining // len(chunk))
+        for item in await asyncio.gather(*(fetch_best(a, limit) for a in chunk)):
+            if item:
+                job_bytes += len(item[1])
+                results.append(item)
     best = await asyncio.to_thread(prefer_full_over_thumbnails, results)
     return best[:MAX_MEDIA_ITEMS]
 
