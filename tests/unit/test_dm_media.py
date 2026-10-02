@@ -80,6 +80,18 @@ def test_url_extraction_from_messages(message, url):
     assert dm._strip_url(dm.URL_RE.search(message).group(0)) == url
 
 
+@pytest.mark.parametrize(
+    "ct, url",
+    [
+        ("image/svg+xml", "https://a.b/icon"),
+        ("image/svg+xml; charset=utf-8", "https://a.b/flag.svg"),
+        ("application/octet-stream", "https://a.b/logo.svg?v=1"),
+    ],
+)
+def test_svg_is_never_media(ct, url):
+    assert not dm._is_media_content_type(ct, url)
+
+
 def test_upload_batches_respect_count_and_size():
     small = [(f"u{i}", b"x" * 10, "image/png") for i in range(12)]
     assert [len(b) for b in dm._upload_batches(small)] == [10, 2]

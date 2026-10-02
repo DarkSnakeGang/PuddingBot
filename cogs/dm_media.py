@@ -33,7 +33,6 @@ MEDIA_EXTS = (
     ".avi",
     ".avif",
     ".bmp",
-    ".svg",
     ".mkv",
     ".apng",
 )
@@ -175,7 +174,6 @@ def _filename_for(url: str, content_type: str, index: int) -> str:
             "image/webp": ".webp",
             "image/avif": ".avif",
             "image/bmp": ".bmp",
-            "image/svg+xml": ".svg",
             "video/mp4": ".mp4",
             "video/webm": ".webm",
             "video/quicktime": ".mov",
@@ -386,7 +384,7 @@ def _extract_media_entries(base_url: str, html: str) -> List[Tuple[str, int, int
 
     # Also scrape any absolute media URLs embedded in the HTML text
     for match in re.finditer(
-        r"https?://[^\s\"'<>]{1,2048}?\.(?:webp|jpe?g|png|gif|mp4|webm|mov|m4v|avi|avif|bmp|svg|apng)(?:\?[^\s\"'<>]{0,2048})?",
+        r"https?://[^\s\"'<>]{1,2048}?\.(?:webp|jpe?g|png|gif|mp4|webm|mov|m4v|avi|avif|bmp|apng)(?:\?[^\s\"'<>]{0,2048})?",
         html,
         re.IGNORECASE,
     ):
@@ -436,6 +434,9 @@ async def _fetch_bytes(
 
 def _is_media_content_type(content_type: str, url: str) -> bool:
     ct = (content_type or "").lower()
+    # Discord shows SVG files as source code, not images
+    if "svg" in ct or _ext_of(url) == ".svg":
+        return False
     if any(ct.startswith(prefix) for prefix in MEDIA_CONTENT_PREFIXES):
         return True
     return _looks_like_media_url(url)
@@ -470,7 +471,7 @@ async def collect_media_from_url(
             except Exception:
                 continue
             ct = (media_ct or "").lower()
-            if ct.startswith("text/") or "svg" in ct or not _is_media_content_type(ct, media_url):
+            if ct.startswith("text/") or not _is_media_content_type(ct, media_url):
                 continue
             if ct.startswith("image/"):
                 dims = await asyncio.to_thread(_image_dims, media_bytes)
