@@ -4,7 +4,7 @@ import os
 import time
 from collections import OrderedDict
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
@@ -12,6 +12,15 @@ CACHE_TTL_SECONDS = 3600
 # After a failed refresh, keep serving the previous copy and retry after this long
 FAILURE_RETRY_SECONDS = 120
 SNAPSHOT_CACHE_SIZE = 64
+# Runs-archive shards downloaded at once when (re)building verified counts
+SHARD_FETCH_CONCURRENCY = 8
+RUNS_ARCHIVE_DIR = 'time-travel-cache/'
+
+# speedrun.com games in the FastSnakeStats runs archive: key -> (game id, url slug)
+SRC_GAMES = {
+    'main': ('o1y9pyk6', 'snake_game'),
+    'ce': ('9dow0go1', 'snake_game_ce'),
+}
 
 
 def _updated_stamp(data: Optional[Dict]) -> str:
@@ -19,6 +28,58 @@ def _updated_stamp(data: Optional[Dict]) -> str:
         return ''
     meta = data.get('meta') or {}
     return str(meta.get('lastUpdated') or data.get('lastUpdated') or '')
+
+
+def run_src_game(record: Dict) -> str:
+    """'main' or 'ce': explicit game field, else the speedrun.com link, else the source tag."""
+    game = str(record.get('game') or record.get('gameId') or '').lower()
+    for key, ids in SRC_GAMES.items():
+        if game and game in ids:
+            return key
+    link = str(record.get('weblink') or '').lower()
+    for key, (_game_id, slug) in SRC_GAMES.items():
+        if f'/{slug}/' in link:
+            return key
+    return 'ce' if str(record.get('source') or '').lower() == 'ce' else 'main'
+
+
+def _is_verified(record: Dict) -> bool:
+    status = record.get('status')
+    if isinstance(status, dict):
+        status = status.get('status')
+    return status is None or str(status).lower() == 'verified'
+
+
+def classify_shard_runs(shard: Dict) -> Dict[str, str]:
+    """Run id -> game key for the verified runs in one runs-archive shard."""
+    runs = (shard or {}).get('runs') or {}
+    records = runs.values() if isinstance(runs, dict) else runs
+    classified: Dict[str, str] = {}
+    for record in records:
+        if isinstance(record, dict) and record.get('id') and _is_verified(record):
+            classified[str(record['id'])] = run_src_game(record)
+    return classified
+
+
+def tally_verified(shard_runs: Iterable[Dict[str, str]]) -> Dict[str, int]:
+    """Verified run counts per game across shards (a run listed twice counts once)."""
+    merged: Dict[str, str] = {}
+    for runs in shard_runs:
+        merged.update(runs)
+    counts = {key: 0 for key in SRC_GAMES}
+    for game in merged.values():
+        counts[game] = counts.get(game, 0) + 1
+    counts['total'] = len(merged)
+    return counts
+
+
+def _safe_shard_path(path: Any) -> bool:
+    return (
+        isinstance(path, str)
+        and path.startswith(RUNS_ARCHIVE_DIR)
+        and path.endswith('.json')
+        and '..' not in path.split('/')
+    )
 
 
 class GitHubCacheFetcher:
@@ -32,6 +93,7 @@ class GitHubCacheFetcher:
         self.statistics_explorer_url = f"{self.base_url}/time-travel-cache/metadata/statistics-explorer.json"
         self.mastery_challenge_url = f"{self.base_url}/time-travel-cache/metadata/mastery-challenge.json"
         self.chronicle_url = f"{self.base_url}/time-travel-cache/metadata/chronicle.json"
+        self.runs_archive_index_url = f"{self.base_url}/time-travel-cache/metadata/runs-archive-index.json"
         # Sibling FastSnakeStats checkout used when GitHub lags
         self._local_fss_root = os.path.normpath(os.path.join(
             os.path.dirname(__file__),
@@ -54,6 +116,11 @@ class GitHubCacheFetcher:
         self._local_chronicle_path = os.path.join(
             self._local_fss_root, 'metadata', 'chronicle.json'
         )
+        self._local_runs_archive_index_path = os.path.join(
+            self._local_fss_root, 'metadata', 'runs-archive-index.json'
+        )
+        # shard path -> {'stamp', 'runs': {run id: game key}}; only changed shards re-download
+        self._verified_shards: Dict[str, Dict[str, Any]] = {}
         # name -> {'data', 'expires' (monotonic seconds), 'loads' (attempt counter)}
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
@@ -976,6 +1043,77 @@ class GitHubCacheFetcher:
         if not data:
             return None
         return list(data.get('introductions') or [])
+
+    async def _load_runs_archive_index(self) -> Tuple[Optional[Dict], bool]:
+        """Fresher of local sibling / GitHub runs-archive index, and whether it's the local one."""
+        local, remote = await asyncio.gather(
+            self._load_local_json_async(self._local_runs_archive_index_path),
+            self._fetch_remote_json(self.runs_archive_index_url, 30),
+        )
+        def valid(data: Any) -> bool:
+            return isinstance(data, dict) and isinstance(data.get('shards'), list)
+
+        local = local if valid(local) else None
+        remote = remote if valid(remote) else None
+        if local and (not remote or _updated_stamp(local) > _updated_stamp(remote)):
+            return local, True
+        return remote, False
+
+    async def _load_runs_archive_shard(self, path: str, use_local: bool) -> Optional[Dict]:
+        if use_local:
+            local_path = os.path.join(os.path.dirname(self._local_fss_root), *path.split('/'))
+            data = await self._load_local_json_async(local_path)
+            if data is not None:
+                return data
+        return await self._fetch_remote_json(f'{self.base_url}/{path}', 60)
+
+    async def _load_verified_counts(self) -> Optional[Dict]:
+        index, use_local = await self._load_runs_archive_index()
+        if not index:
+            return None
+        shards = [s for s in index['shards'] if isinstance(s, dict) and _safe_shard_path(s.get('path'))]
+        index_stamp = _updated_stamp(index)
+        slots = asyncio.Semaphore(SHARD_FETCH_CONCURRENCY)
+
+        async def refresh(shard: Dict) -> bool:
+            path = shard['path']
+            stamp = str(shard.get('sha') or shard.get('updated') or shard.get('count') or index_stamp)
+            cached = self._verified_shards.get(path)
+            if cached and cached['stamp'] == stamp:
+                return True
+            async with slots:
+                data = await self._load_runs_archive_shard(path, use_local)
+            if not isinstance(data, dict):
+                return cached is not None
+            runs = await asyncio.to_thread(classify_shard_runs, data)
+            self._verified_shards[path] = {'stamp': stamp, 'runs': runs}
+            return True
+
+        loaded = await asyncio.gather(*(refresh(shard) for shard in shards))
+        live = {shard['path'] for shard in shards}
+        for path in list(self._verified_shards):
+            if path not in live:
+                del self._verified_shards[path]
+        if shards and not any(loaded):
+            return None
+        counts = await asyncio.to_thread(
+            tally_verified,
+            [entry['runs'] for path, entry in self._verified_shards.items() if path in live],
+        )
+        return {
+            **counts,
+            'lastUpdated': index.get('lastUpdated') or '',
+            'lastVerifyDate': index.get('lastVerifyDate') or '',
+            'shards': len(shards),
+            'missingShards': loaded.count(False),
+        }
+
+    async def get_verified_run_counts(self, force_refresh: bool = False) -> Optional[Dict]:
+        """Verified speedrun.com runs per game from the FastSnakeStats runs archive.
+
+        {'main', 'ce', 'total', 'lastUpdated', 'lastVerifyDate', 'shards', 'missingShards'}
+        """
+        return await self._cached('verified_counts', self._load_verified_counts, force_refresh)
 
 
 # Create global instance

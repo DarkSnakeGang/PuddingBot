@@ -2930,6 +2930,38 @@ class FastSnakeStats(commands.Cog):
         embed.set_footer(text="Data from FastSnakeStats")
         return embed
 
+    VERIFIED_GAMES = {
+        "main": ("Google Snake", "https://www.speedrun.com/snake_game"),
+        "ce": ("Category Extensions", "https://www.speedrun.com/snake_game_ce"),
+    }
+
+    def create_verified_embed(self, counts: Dict, game: str = "main") -> discord.Embed:
+        games = list(self.VERIFIED_GAMES) if game == "both" else [game]
+        total = sum(int(counts.get(key) or 0) for key in games)
+        links = " + ".join(f"[{self.VERIFIED_GAMES[key][0]}]({self.VERIFIED_GAMES[key][1]})" for key in games)
+        embed = discord.Embed(
+            title="✅ Verified runs",
+            description=f"**{total:,}** verified runs on {links}",
+            color=0x2ecc71,
+            timestamp=datetime.now(),
+        )
+        if game == "both":
+            for key in games:
+                embed.add_field(
+                    name=self.VERIFIED_GAMES[key][0], value=f"{int(counts.get(key) or 0):,}", inline=True
+                )
+        if counts.get("missingShards"):
+            embed.add_field(
+                name="⚠️ Partial data",
+                value=f"{counts['missingShards']} archive file(s) couldn't be loaded, so this may be low.",
+                inline=False,
+            )
+        updated = str(counts.get("lastUpdated") or "").split("T")[0]
+        embed.set_footer(
+            text="Data from FastSnakeStats runs archive" + (f" • updated {updated}" if updated else "")
+        )
+        return embed
+
     def create_player_holds_embed(
         self,
         player_name: str,
@@ -5226,6 +5258,32 @@ class FastSnakeStats(commands.Cog):
             print(f"Error in about command: {e}")
             await interaction.followup.send("❌ Could not build about embed.")
 
+    @app_commands.command(name="verified", description="How many verified speedrun.com runs a game has")
+    @app_commands.describe(game="Google Snake (default), Category Extensions, or both")
+    @app_commands.choices(
+        game=[
+            app_commands.Choice(name="Google Snake", value="main"),
+            app_commands.Choice(name="Category Extensions (CE)", value="ce"),
+            app_commands.Choice(name="Both", value="both"),
+        ]
+    )
+    async def verified_command(
+        self,
+        interaction: discord.Interaction,
+        game: Optional[app_commands.Choice[str]] = None,
+    ):
+        await interaction.response.defer()
+        try:
+            counts = await github_cache_fetcher.get_verified_run_counts()
+            if not counts:
+                await interaction.followup.send("❌ Verified run data is unavailable right now.")
+                return
+            embed = self.create_verified_embed(counts, game.value if game else "main")
+            await interaction.followup.send(embed=embed)
+        except Exception as e:
+            print(f"Error in verified command: {e}")
+            await interaction.followup.send("❌ An error occurred while counting verified runs.")
+
     @app_commands.command(name="country", description="Country WR-days leaderboard")
     @app_commands.describe(
         tied="All / untied-only / tied-only WR-days",
@@ -5327,6 +5385,7 @@ class FastSnakeStats(commands.Cog):
         (
             "Tools",
             "- `/about` — FastSnakeStats credits and community links\n"
+            "- `/verified` — verified speedrun.com run count (Google Snake, CE, or both)\n"
             "- `/caption` — ESMBot-style caption on an image or GIF\n"
             "- Select Image — right-click a message → Apps → Select Image\n"
             "- `/wallall` — solve small-board Wall All (paste pudding `pattern 12…` copy, or a 90-cell 0/1 or 1/2 grid)\n"
