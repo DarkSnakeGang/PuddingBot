@@ -50,26 +50,92 @@ def _is_verified(record: Dict) -> bool:
     return status is None or str(status).lower() == 'verified'
 
 
-def classify_shard_runs(shard: Dict) -> Dict[str, str]:
-    """Run id -> game key for the verified runs in one runs-archive shard."""
+def _user_name(value: Any) -> Optional[str]:
+    if isinstance(value, dict):
+        value = value.get('name') or (value.get('names') or {}).get('international')
+    value = str(value).strip() if value else ''
+    return value or None
+
+
+def run_examiner(record: Dict) -> Tuple[Optional[str], Optional[str]]:
+    """(examiner key, examiner name) of a run; the key is the speedrun.com user id when known."""
+    examiner = record.get('examiner')
+    status = record.get('status')
+    if examiner is None and isinstance(status, dict):
+        examiner = status.get('examiner')
+    name = _user_name(record.get('examinerName'))
+    if isinstance(examiner, dict):
+        name = name or _user_name(examiner)
+        examiner = examiner.get('id')
+    key = str(examiner).strip() if examiner else ''
+    return (key or name or None), name
+
+
+def classify_shard_runs(shard: Dict) -> Dict[str, Dict]:
+    """Verified runs of one runs-archive shard plus the user names it reveals.
+
+    {'runs': {run id: (game key, examiner key or None)},
+     'examinerNames': {examiner key: name}, 'playerNames': {player id: name}}
+    """
     runs = (shard or {}).get('runs') or {}
     records = runs.values() if isinstance(runs, dict) else runs
-    classified: Dict[str, str] = {}
+    classified: Dict[str, Tuple[str, Optional[str]]] = {}
+    examiner_names: Dict[str, str] = {}
+    player_names: Dict[str, str] = {}
     for record in records:
-        if isinstance(record, dict) and record.get('id') and _is_verified(record):
-            classified[str(record['id'])] = run_src_game(record)
-    return classified
+        if not isinstance(record, dict) or not record.get('id') or not _is_verified(record):
+            continue
+        examiner, name = run_examiner(record)
+        if examiner and name:
+            examiner_names[examiner] = name
+        player_id, player_name = record.get('playerId'), record.get('playerName')
+        if player_id and player_name and not record.get('guest'):
+            player_names[str(player_id)] = str(player_name)
+        classified[str(record['id'])] = (run_src_game(record), examiner)
+    return {'runs': classified, 'examinerNames': examiner_names, 'playerNames': player_names}
 
 
-def tally_verified(shard_runs: Iterable[Dict[str, str]]) -> Dict[str, int]:
-    """Verified run counts per game across shards (a run listed twice counts once)."""
-    merged: Dict[str, str] = {}
-    for runs in shard_runs:
-        merged.update(runs)
-    counts = {key: 0 for key in SRC_GAMES}
-    for game in merged.values():
+def tally_verified(shards: Iterable[Dict[str, Dict]], index_examiners: Optional[Dict] = None) -> Dict:
+    """Verified run counts per game and per examiner across shards (a run listed twice counts once).
+
+    Examiner names come from the runs, then the index's `examiners` map, then the examiner's
+    own runs as a player, else the raw id. Lists are [name, runs] sorted by most runs.
+    """
+    merged: Dict[str, Tuple[str, Optional[str]]] = {}
+    examiner_names: Dict[str, str] = {}
+    player_names: Dict[str, str] = {}
+    for shard in shards:
+        merged.update(shard.get('runs') or {})
+        examiner_names.update(shard.get('examinerNames') or {})
+        player_names.update(shard.get('playerNames') or {})
+    for key, value in (index_examiners or {}).items() if isinstance(index_examiners, dict) else ():
+        name = _user_name(value)
+        if name:
+            examiner_names.setdefault(str(key), name)
+
+    counts: Dict[str, Any] = {key: 0 for key in SRC_GAMES}
+    per_examiner: Dict[str, Dict[str, int]] = {key: {} for key in [*SRC_GAMES, 'both']}
+    unexamined = {key: 0 for key in [*SRC_GAMES, 'both']}
+    for game, examiner in merged.values():
         counts[game] = counts.get(game, 0) + 1
+        for scope in (game, 'both'):
+            if examiner:
+                per_examiner[scope][examiner] = per_examiner[scope].get(examiner, 0) + 1
+            else:
+                unexamined[scope] += 1
     counts['total'] = len(merged)
+
+    def name_of(key: str) -> str:
+        return examiner_names.get(key) or player_names.get(key) or key
+
+    counts['examiners'] = {
+        scope: sorted(
+            ([name_of(key), n] for key, n in tallies.items()),
+            key=lambda row: (-row[1], row[0].lower()),
+        )
+        for scope, tallies in per_examiner.items()
+    }
+    counts['unexamined'] = unexamined
     return counts
 
 
@@ -1085,8 +1151,8 @@ class GitHubCacheFetcher:
                 data = await self._load_runs_archive_shard(path, use_local)
             if not isinstance(data, dict):
                 return cached is not None
-            runs = await asyncio.to_thread(classify_shard_runs, data)
-            self._verified_shards[path] = {'stamp': stamp, 'runs': runs}
+            classified = await asyncio.to_thread(classify_shard_runs, data)
+            self._verified_shards[path] = {'stamp': stamp, 'data': classified}
             return True
 
         loaded = await asyncio.gather(*(refresh(shard) for shard in shards))
@@ -1098,7 +1164,8 @@ class GitHubCacheFetcher:
             return None
         counts = await asyncio.to_thread(
             tally_verified,
-            [entry['runs'] for path, entry in self._verified_shards.items() if path in live],
+            [entry['data'] for path, entry in self._verified_shards.items() if path in live],
+            index.get('examiners'),
         )
         return {
             **counts,
@@ -1111,7 +1178,9 @@ class GitHubCacheFetcher:
     async def get_verified_run_counts(self, force_refresh: bool = False) -> Optional[Dict]:
         """Verified speedrun.com runs per game from the FastSnakeStats runs archive.
 
-        {'main', 'ce', 'total', 'lastUpdated', 'lastVerifyDate', 'shards', 'missingShards'}
+        {'main', 'ce', 'total', 'examiners': {'main'|'ce'|'both': [[name, runs], ...]},
+         'unexamined': {'main'|'ce'|'both': runs without an examiner}, 'lastUpdated',
+         'lastVerifyDate', 'shards', 'missingShards'}
         """
         return await self._cached('verified_counts', self._load_verified_counts, force_refresh)
 

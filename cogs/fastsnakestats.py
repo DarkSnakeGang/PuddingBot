@@ -2935,7 +2935,13 @@ class FastSnakeStats(commands.Cog):
         "ce": ("Category Extensions", "https://www.speedrun.com/snake_game_ce"),
     }
 
-    def create_verified_embed(self, counts: Dict, game: str = "main") -> discord.Embed:
+    VERIFIERS_PER_PAGE = 15
+
+    def verified_total_pages(self, counts: Dict, game: str = "both") -> int:
+        examiners = (counts.get("examiners") or {}).get(game) or []
+        return max(1, (len(examiners) + self.VERIFIERS_PER_PAGE - 1) // self.VERIFIERS_PER_PAGE)
+
+    def create_verified_embed(self, counts: Dict, game: str = "both", page: int = 0) -> discord.Embed:
         games = list(self.VERIFIED_GAMES) if game == "both" else [game]
         total = sum(int(counts.get(key) or 0) for key in games)
         links = " + ".join(f"[{self.VERIFIED_GAMES[key][0]}]({self.VERIFIED_GAMES[key][1]})" for key in games)
@@ -2950,6 +2956,30 @@ class FastSnakeStats(commands.Cog):
                 embed.add_field(
                     name=self.VERIFIED_GAMES[key][0], value=f"{int(counts.get(key) or 0):,}", inline=True
                 )
+
+        examiners = (counts.get("examiners") or {}).get(game) or []
+        unexamined = int((counts.get("unexamined") or {}).get(game) or 0)
+        total_pages = self.verified_total_pages(counts, game)
+        page = max(0, min(page, total_pages - 1))
+        if examiners:
+            start = page * self.VERIFIERS_PER_PAGE
+            lines = [
+                f"`{rank}.` {discord.utils.escape_markdown(str(name))} — **{int(runs):,}**"
+                for rank, (name, runs) in enumerate(
+                    examiners[start:start + self.VERIFIERS_PER_PAGE], start=start + 1
+                )
+            ]
+            if unexamined:
+                lines.append(f"*{unexamined:,} runs have no examiner on record*")
+            embed.add_field(name="Verified by", value="\n".join(lines), inline=False)
+        else:
+            embed.add_field(
+                name="Verified by",
+                value="FastSnakeStats doesn't record who verified each run yet; "
+                "this list will show up here automatically once it does.",
+                inline=False,
+            )
+
         if counts.get("missingShards"):
             embed.add_field(
                 name="⚠️ Partial data",
@@ -2957,9 +2987,10 @@ class FastSnakeStats(commands.Cog):
                 inline=False,
             )
         updated = str(counts.get("lastUpdated") or "").split("T")[0]
-        embed.set_footer(
-            text="Data from FastSnakeStats runs archive" + (f" • updated {updated}" if updated else "")
-        )
+        footer = "Data from FastSnakeStats runs archive" + (f" • updated {updated}" if updated else "")
+        if total_pages > 1:
+            footer = f"Page {page + 1}/{total_pages} • {footer}"
+        embed.set_footer(text=footer)
         return embed
 
     def create_player_holds_embed(
@@ -5258,13 +5289,13 @@ class FastSnakeStats(commands.Cog):
             print(f"Error in about command: {e}")
             await interaction.followup.send("❌ Could not build about embed.")
 
-    @app_commands.command(name="verified", description="How many verified speedrun.com runs a game has")
-    @app_commands.describe(game="Google Snake (default), Category Extensions, or both")
+    @app_commands.command(name="verified", description="Verified speedrun.com runs and who verified them")
+    @app_commands.describe(game="Both (default), Google Snake, or Category Extensions")
     @app_commands.choices(
         game=[
+            app_commands.Choice(name="Both", value="both"),
             app_commands.Choice(name="Google Snake", value="main"),
             app_commands.Choice(name="Category Extensions (CE)", value="ce"),
-            app_commands.Choice(name="Both", value="both"),
         ]
     )
     async def verified_command(
@@ -5278,8 +5309,18 @@ class FastSnakeStats(commands.Cog):
             if not counts:
                 await interaction.followup.send("❌ Verified run data is unavailable right now.")
                 return
-            embed = self.create_verified_embed(counts, game.value if game else "main")
-            await interaction.followup.send(embed=embed)
+            scope = game.value if game else "both"
+            embed = self.create_verified_embed(counts, scope)
+            total_pages = self.verified_total_pages(counts, scope)
+            if total_pages > 1:
+                view = ListPaginationView(
+                    interaction.user.id,
+                    total_pages,
+                    lambda page: self.create_verified_embed(counts, scope, page),
+                )
+                view.message = await interaction.followup.send(embed=embed, view=view)
+            else:
+                await interaction.followup.send(embed=embed)
         except Exception as e:
             print(f"Error in verified command: {e}")
             await interaction.followup.send("❌ An error occurred while counting verified runs.")
@@ -5385,7 +5426,7 @@ class FastSnakeStats(commands.Cog):
         (
             "Tools",
             "- `/about` — FastSnakeStats credits and community links\n"
-            "- `/verified` — verified speedrun.com run count (Google Snake, CE, or both)\n"
+            "- `/verified` — verified speedrun.com runs and who verified them (both games, Google Snake, or CE)\n"
             "- `/caption` — ESMBot-style caption on an image or GIF\n"
             "- Select Image — right-click a message → Apps → Select Image\n"
             "- `/wallall` — solve small-board Wall All (paste pudding `pattern 12…` copy, or a 90-cell 0/1 or 1/2 grid)\n"

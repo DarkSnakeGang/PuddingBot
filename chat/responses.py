@@ -281,7 +281,7 @@ def clear_context():
         - /unheld - Never-held categories, easiest first (optional difficulty tier + category/CE filters; High score modes only; Timed = non-HS)
         - /activity - Yearly flips or new-WR activity with calendar heatmap PNG (ce_display)
         - /about - FastSnakeStats credits, last updated, and community links
-        - /verified - How many verified speedrun.com runs Google Snake, Category Extensions (CE), or both have
+        - /verified - How many verified speedrun.com runs both games (default), Google Snake, or Category Extensions (CE) have, and how many runs each examiner verified
         - /watch - Watch a category and get pinged when its WR changes (add / list / remove / clear)
         - /compare - Compare two players' WR holds (optional date + ce_display)
         - /help - List PuddingBot slash commands
